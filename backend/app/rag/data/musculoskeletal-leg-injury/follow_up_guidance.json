@@ -1,0 +1,27 @@
+[
+  {
+    "id": "guidance_weight_bearing",
+    "text": "If the patient cannot bear any weight on the leg at all, ask specifically whether they heard or felt a pop or snap at the time of injury, since complete inability to bear weight raises the likelihood of a fracture over a simple sprain.",
+    "related_fields": ["weight_bearing", "mechanism_of_injury"]
+  },
+  {
+    "id": "guidance_redness_warmth",
+    "text": "If the patient reports redness and warmth together, ask whether the redness is spreading or has a clear border, since spreading redness with warmth can indicate a skin infection (cellulitis) that clinicians will want flagged.",
+    "related_fields": ["redness", "warmth"]
+  },
+  {
+    "id": "guidance_numbness",
+    "text": "If the patient reports numbness or tingling, ask whether the foot or toes feel cold, look pale, or feel different in color compared to the other leg, since this combination can indicate reduced blood flow and is time-sensitive.",
+    "related_fields": ["numbness_or_tingling"]
+  },
+  {
+    "id": "guidance_swelling_onset",
+    "text": "If swelling came on suddenly without a clear injury, ask about recent long travel, surgery, or immobility, since sudden unexplained leg swelling has differentials clinicians will want noted.",
+    "related_fields": ["swelling", "onset", "mechanism_of_injury"]
+  },
+  {
+    "id": "guidance_prior_injury",
+    "text": "If the patient has injured this same leg before, ask how it was treated last time and whether this feels similar or different, since a repeat injury to the same area is relevant history.",
+    "related_fields": ["prior_injury_to_area"]
+  }
+]

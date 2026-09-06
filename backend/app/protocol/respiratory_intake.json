@@ -1,0 +1,30 @@
+{
+  "protocol_id": "respiratory-intake",
+  "name": "Respiratory Intake (Persistent Cough)",
+  "keywords": [
+    "cough", "coughing", "cold", "flu", "wheeze", "wheezing", "breathing", "breath",
+    "chest", "phlegm", "mucus", "sputum", "congestion", "congested", "sore throat",
+    "runny nose", "stuffy nose", "sneezing", "bronchitis", "asthma", "shortness of breath"
+  ],
+  "fields": [
+    { "field": "chief_complaint", "label": "Reason for visit", "category": "reason", "required": true },
+    { "field": "onset", "label": "Onset", "category": "timeline", "required": true },
+    { "field": "course", "label": "Course (improving/worsening/unchanged)", "category": "timeline", "required": true },
+    { "field": "character", "label": "Character (dry vs. productive)", "category": "character", "required": true },
+    { "field": "timing", "label": "Timing pattern (e.g. worse at night)", "category": "character", "required": true },
+    { "field": "fever", "label": "Fever or chills", "category": "associated_symptoms", "required": true },
+    { "field": "max_temperature", "label": "Maximum measured temperature", "category": "associated_symptoms", "required": false, "required_if": "fever" },
+    { "field": "breathing_difficulty", "label": "Shortness of breath / difficulty breathing", "category": "associated_symptoms", "required": true },
+    { "field": "chest_discomfort", "label": "Chest discomfort or pain", "category": "associated_symptoms", "required": true },
+    { "field": "wheezing", "label": "Wheezing", "category": "associated_symptoms", "required": true },
+    { "field": "travel_exposure", "label": "Recent travel or known exposure", "category": "history", "required": true },
+    { "field": "smoking_history", "label": "Smoking history", "category": "history", "required": true },
+    { "field": "respiratory_history", "label": "Asthma or other respiratory conditions", "category": "history", "required": true },
+    { "field": "inhaler_last_used", "label": "Inhaler: when last used", "category": "medications", "required": false, "required_if": "respiratory_history" },
+    { "field": "inhaler_indication", "label": "Inhaler: original indication", "category": "medications", "required": false, "required_if": "respiratory_history" },
+    { "field": "medications_tried", "label": "Medications already tried for this complaint", "category": "medications", "required": true },
+    { "field": "medication_allergies", "label": "Medication allergies", "category": "allergies", "required": true },
+    { "field": "allergy_reaction", "label": "Allergy: reaction description", "category": "allergies", "required": false, "required_if": "medication_allergies" },
+    { "field": "patient_concerns", "label": "Patient's primary concern / expectations", "category": "concerns", "required": true }
+  ]
+}

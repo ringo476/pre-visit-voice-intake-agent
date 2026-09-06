@@ -1,0 +1,20 @@
+[
+  {
+    "id": "chart_1",
+    "text": "Patient was seen 3 years ago and prescribed an albuterol inhaler for exercise-induced wheeze.",
+    "field": "respiratory_history",
+    "date": "2023-06-12"
+  },
+  {
+    "id": "chart_2",
+    "text": "Patient has a documented penicillin allergy noted in the chart from a visit in 2019; the reaction itself was not specified in that note.",
+    "field": "medication_allergies",
+    "date": "2019-03-04"
+  },
+  {
+    "id": "chart_3",
+    "text": "No history of chronic lung disease, COPD, or prior pneumonia documented in the chart.",
+    "field": "respiratory_history",
+    "date": "2023-06-12"
+  }
+]

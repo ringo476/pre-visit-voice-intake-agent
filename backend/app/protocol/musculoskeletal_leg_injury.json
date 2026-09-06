@@ -1,0 +1,27 @@
+{
+  "protocol_id": "musculoskeletal-leg-injury",
+  "name": "Musculoskeletal Intake (Leg Pain / Swelling / Injury)",
+  "keywords": [
+    "leg", "ankle", "knee", "foot", "shin", "calf", "thigh", "hip",
+    "sprain", "sprained", "twisted", "swelling", "swollen", "injury", "injured",
+    "fell", "fall", "fracture", "broken", "bruise", "limping", "limp"
+  ],
+  "fields": [
+    { "field": "chief_complaint", "label": "Reason for visit", "category": "reason", "required": true },
+    { "field": "onset", "label": "Onset", "category": "timeline", "required": true },
+    { "field": "mechanism_of_injury", "label": "How it happened (fall, twist, direct blow, no known injury)", "category": "character", "required": true },
+    { "field": "pain_severity", "label": "Pain severity", "category": "character", "required": true },
+    { "field": "swelling", "label": "Swelling", "category": "associated_symptoms", "required": true },
+    { "field": "redness", "label": "Redness", "category": "associated_symptoms", "required": true },
+    { "field": "warmth", "label": "Warmth to the touch", "category": "associated_symptoms", "required": true },
+    { "field": "numbness_or_tingling", "label": "Numbness or tingling", "category": "associated_symptoms", "required": true },
+    { "field": "weight_bearing", "label": "Ability to bear weight / walk on it", "category": "associated_symptoms", "required": true },
+    { "field": "fever", "label": "Fever or chills", "category": "associated_symptoms", "required": true },
+    { "field": "max_temperature", "label": "Maximum measured temperature", "category": "associated_symptoms", "required": false, "required_if": "fever" },
+    { "field": "prior_injury_to_area", "label": "Prior injury to the same leg", "category": "history", "required": true },
+    { "field": "medications_tried", "label": "Medications already tried for this complaint", "category": "medications", "required": true },
+    { "field": "medication_allergies", "label": "Medication allergies", "category": "allergies", "required": true },
+    { "field": "allergy_reaction", "label": "Allergy: reaction description", "category": "allergies", "required": false, "required_if": "medication_allergies" },
+    { "field": "patient_concerns", "label": "Patient's primary concern / expectations", "category": "concerns", "required": true }
+  ]
+}

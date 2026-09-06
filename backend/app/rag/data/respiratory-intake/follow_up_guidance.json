@@ -1,0 +1,27 @@
+[
+  {
+    "id": "guidance_wheeze_inhaler",
+    "text": "If the patient reports wheezing and has a prior inhaler, ask when they last used it and what it was originally prescribed for, since an old, unused inhaler with an unclear original indication is a gap clinicians will want clarified.",
+    "related_fields": ["wheezing", "respiratory_history", "inhaler_last_used", "inhaler_indication"]
+  },
+  {
+    "id": "guidance_productive_cough",
+    "text": "If the cough is productive with colored sputum, ask about sputum color and any fever, since this combination can indicate a bacterial component worth flagging for the clinician.",
+    "related_fields": ["character", "fever"]
+  },
+  {
+    "id": "guidance_night_worse",
+    "text": "If symptoms are worse at night, ask whether lying flat makes it worse, since nocturnal worsening has several common differentials worth noting for the clinician.",
+    "related_fields": ["timing"]
+  },
+  {
+    "id": "guidance_allergy_reaction",
+    "text": "If the patient reports a medication allergy, always ask what the specific reaction was, such as rash, swelling, or difficulty breathing, since an unspecified allergy reaction is one of the most common intake gaps clinicians flag.",
+    "related_fields": ["medication_allergies", "allergy_reaction"]
+  },
+  {
+    "id": "guidance_smoking_history",
+    "text": "If the patient has any smoking history, ask about how much and whether they currently smoke, since this materially changes the differential for a persistent cough.",
+    "related_fields": ["smoking_history"]
+  }
+]

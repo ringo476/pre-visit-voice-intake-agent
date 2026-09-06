@@ -1,0 +1,14 @@
+[
+  {
+    "id": "chart_1",
+    "text": "Patient sprained the same ankle approximately 2 years ago; treated conservatively with rest and physical therapy, no surgery.",
+    "field": "prior_injury_to_area",
+    "date": "2024-02-18"
+  },
+  {
+    "id": "chart_2",
+    "text": "No history of blood clots (DVT), clotting disorders, or prior leg surgery documented in the chart.",
+    "field": "history",
+    "date": "2024-02-18"
+  }
+]

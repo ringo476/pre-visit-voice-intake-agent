@@ -1,0 +1,57 @@
+"""All server-side state for one patient conversation. Tool handlers read
+and mutate this; the model never sees or touches it directly, only through
+the 8 tool calls."""
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+from app.schemas.document import UploadedDocument
+from app.schemas.intake_record import IntakeRecord, QuestionEvent, SafetyEvaluation, TranscriptTurn
+from app.schemas.protocol_config import ProtocolConfig
+from app.state_engine import create_empty_record
+
+UNCLASSIFIED_PROTOCOL_ID = "unclassified"
+
+
+@dataclass
+class AssistanceRequest:
+    id: str
+    reason: str
+    timestamp: str
+
+
+@dataclass
+class SessionState:
+    session_id: str
+    record: IntakeRecord
+    # None until the patient actually describes a complaint — see
+    # app/protocol/classifier.py. Before that, the tool layer allows
+    # conversation and safety checks but not protocol-dependent tools
+    # (get_next_intake_question, retrieve_existing_patient_context,
+    # generate_clinician_brief), which fail gracefully rather than crash.
+    protocol: Optional[ProtocolConfig] = None
+    question_events: list[QuestionEvent] = field(default_factory=list)
+    transcript: list[TranscriptTurn] = field(default_factory=list)
+    safety_log: list[SafetyEvaluation] = field(default_factory=list)
+    assistance_requests: list[AssistanceRequest] = field(default_factory=list)
+    documents: list[UploadedDocument] = field(default_factory=list)
+    brief_finalized: bool = False
+
+
+def create_session(session_id: str, protocol: Optional[ProtocolConfig] = None) -> SessionState:
+    protocol_id = protocol.protocol_id if protocol else UNCLASSIFIED_PROTOCOL_ID
+    return SessionState(
+        session_id=session_id,
+        protocol=protocol,
+        record=create_empty_record(session_id, protocol_id),
+    )
+
+
+def assign_protocol(session: SessionState, protocol: ProtocolConfig) -> None:
+    """Locks in the protocol once the patient's chief complaint has been
+    classified. Only ever called once per session — a mid-conversation
+    switch to a different complaint type is deliberately NOT supported;
+    the agent is instructed to acknowledge it and defer it instead (see
+    instructions.py), not silently reassign the checklist mid-flow."""
+    session.protocol = protocol
+    session.record = session.record.model_copy(update={"protocol_id": protocol.protocol_id})
