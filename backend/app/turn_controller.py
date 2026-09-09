@@ -8,11 +8,15 @@ function with exactly one caller (this file), so a separate module bought
 no real isolation. If a second caller or a provider swap ever shows up,
 split them back out then.
 
-Barge-in itself is handled client-side (see the frontend's voice hook):
-because STT/TTS here are per-utterance batch calls rather than a continuous
-stream, there is no in-flight server-side generation to cancel — the
-frontend stopping local audio playback the instant it detects the patient
-speaking again *is* the interruption mechanism.
+Barge-in is detected client-side (see the frontend's voice hook), which
+stops local audio playback the instant it detects the patient speaking
+again — but that alone doesn't stop the turn that's still being processed
+server-side. main.py bumps session.turn_generation on every new recorded
+utterance and on a client barge-in signal; the generation a turn started
+with is threaded through to the agent graph (see agent/graph.py), which
+checks it before each further model/tool call and stops itself once a
+newer utterance has superseded it, rather than finishing in the background
+and landing a stale reply in the transcript.
 """
 
 from dataclasses import dataclass
@@ -94,20 +98,36 @@ class TurnOutcome:
     transcript: str
     reply_text: str
     audio: bytes
+    superseded: bool = False
 
 
-def handle_utterance(session: SessionState, audio: bytes) -> TurnOutcome:
+def handle_utterance(session: SessionState, audio: bytes, generation: Optional[int] = None) -> TurnOutcome:
     transcription = transcribe_utterance(audio)
-    return run_text_turn(session, transcription.text)
+    if not transcription.text.strip():
+        # A silence-only or too-short clip transcribes to nothing — sending
+        # an empty message to Gemini is rejected outright ("contents are
+        # required"). Nothing meaningful was said, so there's nothing to
+        # run through the agent or send back; `superseded` already means
+        # "the client gets nothing for this attempt" to main.py, which
+        # fits here too.
+        return TurnOutcome(transcript="", reply_text="", audio=b"", superseded=True)
+    return run_text_turn(session, transcription.text, generation=generation)
 
 
-def run_text_turn(session: SessionState, patient_text: str) -> TurnOutcome:
+def run_text_turn(session: SessionState, patient_text: str, generation: Optional[int] = None) -> TurnOutcome:
     """Runs one turn from already-known text rather than recorded audio —
     used when a document upload triggers a synthetic 'patient' turn (see
     main.py's upload endpoint). Shares the agent graph and TTS step with
-    the voice path; only the STT step is skipped since there's no audio."""
+    the voice path; only the STT step is skipped since there's no audio.
+
+    `generation` is None for the document-upload path (nothing there races
+    against a barge-in) and the live turn_generation snapshot for voice
+    turns. When the turn comes back superseded, no audio is synthesized for
+    a reply nobody is waiting to hear."""
     system_note = _classify_and_note(session, patient_text)
-    result = run_agent_turn(session, patient_text, system_note=system_note)
+    result = run_agent_turn(session, patient_text, system_note=system_note, turn_generation=generation)
+    if result.get("superseded"):
+        return TurnOutcome(transcript=patient_text, reply_text="", audio=b"", superseded=True)
     audio_out = synthesize_speech(result["reply_text"])
     return TurnOutcome(transcript=patient_text, reply_text=result["reply_text"], audio=audio_out)
 

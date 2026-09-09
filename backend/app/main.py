@@ -2,6 +2,7 @@
 a WebSocket endpoint that carries the voice turns (binary audio in,
 JSON control/state messages + binary audio out)."""
 
+import asyncio
 import json
 import os
 import uuid
@@ -136,7 +137,7 @@ async def upload_document(session_id: str, file: UploadFile = File(...)):
             else f'Patient uploaded a document: "{file.filename}".'
         )
         try:
-            outcome = run_text_turn(session, note)
+            outcome = await asyncio.to_thread(run_text_turn, session, note)
             await _send_turn_outcome(ws, session, outcome)
         except Exception as e:  # noqa: BLE001 - report but don't fail the upload response
             print(f"[{session_id}] document turn failed: {e}")
@@ -162,6 +163,8 @@ async def voice_socket(websocket: WebSocket):
     try:
         while True:
             message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
             if message["type"] != "websocket.receive":
                 continue
 
@@ -171,22 +174,33 @@ async def voice_socket(websocket: WebSocket):
                 except json.JSONDecodeError:
                     continue
                 if control.get("type") == "barge_in":
-                    # Batch STT/TTS means there's nothing server-side in
-                    # flight to cancel — the frontend stopping local
-                    # playback the instant it detects speech IS the
-                    # interruption. Logged for visibility.
+                    # Invalidates whatever turn is currently in flight (see
+                    # agent/graph.py's staleness check) so it stops making
+                    # further model/tool calls instead of finishing in the
+                    # background and landing a stale reply in the transcript.
+                    session.turn_generation += 1
                     print(f"[{session_id}] barge-in signaled by client")
                 continue
 
             if "bytes" in message and message["bytes"] is not None:
+                session.turn_generation += 1
+                my_generation = session.turn_generation
                 await websocket.send_json({"type": "voice_state", "state": "thinking"})
                 try:
-                    outcome = handle_utterance(session, message["bytes"])
-                    await _send_turn_outcome(websocket, session, outcome)
+                    outcome = await asyncio.to_thread(handle_utterance, session, message["bytes"], my_generation)
+                    if not outcome.superseded:
+                        await _send_turn_outcome(websocket, session, outcome)
+                except (WebSocketDisconnect, RuntimeError):
+                    # Client already gone (e.g. it disconnected while this
+                    # turn was still running) — nothing to send back to.
+                    break
                 except Exception as e:  # noqa: BLE001
                     print(f"[{session_id}] turn failed: {e}")
-                    await websocket.send_json({"type": "error", "message": str(e)})
-                    await websocket.send_json({"type": "voice_state", "state": "listening"})
+                    try:
+                        await websocket.send_json({"type": "error", "message": str(e)})
+                        await websocket.send_json({"type": "voice_state", "state": "listening"})
+                    except (WebSocketDisconnect, RuntimeError):
+                        break
     except WebSocketDisconnect:
         pass
     finally:

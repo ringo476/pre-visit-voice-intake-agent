@@ -36,6 +36,12 @@ class SessionState:
     assistance_requests: list[AssistanceRequest] = field(default_factory=list)
     documents: list[UploadedDocument] = field(default_factory=list)
     brief_finalized: bool = False
+    # Bumped by main.py on every new recorded utterance (and on a client
+    # barge-in signal). A turn captures this value when it starts; if it no
+    # longer matches by the time a Gemini call would run, that turn has been
+    # superseded by a newer one and stops itself rather than making further
+    # model calls or writing facts from stale context.
+    turn_generation: int = 0
 
 
 def create_session(session_id: str, protocol: Optional[ProtocolConfig] = None) -> SessionState:

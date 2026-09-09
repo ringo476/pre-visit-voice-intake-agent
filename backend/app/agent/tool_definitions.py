@@ -7,6 +7,9 @@ schemas — rather than auto-derived from the Pydantic arg models in
 schemas/tool_schemas.py — so the exact contract the model sees is easy to
 audit at a glance."""
 
+import copy
+from typing import Optional
+
 SOURCE_ENUM = ["patient_reported", "asked_and_denied", "document_sourced", "inferred", "not_asked"]
 
 TOOL_DEFINITIONS: list[dict] = [
@@ -19,7 +22,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "field": {"type": "string", "description": "The protocol field this fact is about, e.g. 'onset', 'wheezing', 'medication_allergies'."},
+                "field": {"type": "string", "description": "The protocol field this fact is about."},
                 "value": {"type": "string", "description": "The extracted value, in plain text."},
                 "source": {
                     "type": "string",
@@ -119,3 +122,23 @@ TOOL_DEFINITIONS: list[dict] = [
         },
     },
 ]
+
+
+def build_tool_definitions(field_names: Optional[list[str]] = None) -> list[dict]:
+    """Returns TOOL_DEFINITIONS, constraining the `field` argument of
+    update_intake_record and record_patient_correction to an exact enum of
+    `field_names` when given (i.e. once a protocol is locked and its real
+    field list is known). Without this, the model only sees `field` as a
+    free-text string with a couple of illustrative examples, and will
+    occasionally invent a plausible-sounding name (e.g. "timing_pattern")
+    instead of the protocol's actual field ("timing") — caught by
+    tools.py's validation, but only after a wasted extra round trip to
+    the model. An enum makes that guess structurally impossible instead of
+    catching it after the fact."""
+    definitions = copy.deepcopy(TOOL_DEFINITIONS)
+    if not field_names:
+        return definitions
+    for tool in definitions:
+        if tool["name"] in ("update_intake_record", "record_patient_correction"):
+            tool["parameters"]["properties"]["field"]["enum"] = field_names
+    return definitions

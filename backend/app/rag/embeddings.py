@@ -76,7 +76,7 @@ def get_embeddings() -> Embeddings:
     if api_key:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-        _cached_embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
+        _cached_embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001", google_api_key=api_key)
     else:
         _cached_embeddings = HashingEmbeddings()
 

@@ -40,8 +40,8 @@ const WS_URL = (import.meta.env.VITE_WS_URL as string | undefined) ?? "ws://loca
 
 // Tuned empirically in a real deployment; a fixed energy threshold is a
 // reasonable MVP stand-in for a proper VAD model.
-const SPEECH_ENERGY_THRESHOLD = 0.02;
-const SILENCE_MS = 900;
+const SPEECH_ENERGY_THRESHOLD = 0.06;
+const SILENCE_MS = 2500;
 
 const emptyIntake: IntakeState = {
   record: null,
@@ -95,6 +95,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       isRecordingRef.current = false;
       const blob = new Blob(recordedChunksRef.current, { type: "audio/webm" });
       recordedChunksRef.current = [];
+      console.log("[VAD] recorder stopped, blob size:", blob.size, "ws readyState:", wsRef.current?.readyState);
       if (blob.size > 0) {
         blob.arrayBuffer().then((buf) => wsRef.current?.send(buf));
       }
@@ -105,18 +106,26 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   }
 
   function stopRecording() {
+    console.log("[VAD] stopRecording() called, recorder state:", recorderRef.current?.state);
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
   }
 
   function scheduleSilenceStop() {
-    if (silenceTimerRef.current) window.clearTimeout(silenceTimerRef.current);
-    silenceTimerRef.current = window.setTimeout(stopRecording, SILENCE_MS);
+    if (silenceTimerRef.current) return; // already counting down, don't restart the clock
+    console.log("[VAD] silence timer scheduled, will stop in 900ms unless speech resumes");
+    silenceTimerRef.current = window.setTimeout(() => {
+      silenceTimerRef.current = null;
+      stopRecording();
+    }, SILENCE_MS);
   }
 
   function vadLoop() {
     const analyser = analyserRef.current;
+    if (!analyser) {
+      console.log("[VAD] loop is running but analyserRef is null");
+    }
     if (analyser) {
       const data = new Uint8Array(analyser.fftSize);
       analyser.getByteTimeDomainData(data);
@@ -127,6 +136,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       }
       const rms = Math.sqrt(sumSquares / data.length);
       const speaking = rms > SPEECH_ENERGY_THRESHOLD;
+      console.log("[VAD]", { rms: rms.toFixed(4), speaking, recording: isRecordingRef.current });
 
       if (speaking) {
         if (isPlayingRef.current) {
@@ -145,7 +155,6 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
         scheduleSilenceStop();
       }
     }
-    vadRafRef.current = requestAnimationFrame(vadLoop);
   }
 
   function playAudio(data: ArrayBuffer) {
@@ -206,6 +215,9 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
 
       const audioContext = new AudioContext();
       audioContextRef.current = audioContext;
+      if (audioContext.state === "suspended") {
+        await audioContext.resume();
+      }
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 2048;
@@ -223,7 +235,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
 
     ws.onopen = () => {
       setVoiceState("listening");
-      vadRafRef.current = requestAnimationFrame(vadLoop);
+      vadRafRef.current = window.setInterval(vadLoop, 100);
     };
     ws.onmessage = (event) => {
       if (typeof event.data === "string") {
@@ -246,7 +258,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   }
 
   function endSession() {
-    if (vadRafRef.current) cancelAnimationFrame(vadRafRef.current);
+    if (vadRafRef.current) window.clearInterval(vadRafRef.current);
     stopPlayback();
     stopRecording();
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
