@@ -1,0 +1,22 @@
+[
+  {
+    "id": "guidance_airway_swelling",
+    "text": "If the patient reports any swelling of the face, lips, tongue, or throat, always ask about breathing difficulty next, since this combination is a hallmark of a severe allergic reaction (anaphylaxis) requiring emergency attention.",
+    "related_fields": ["swelling_face_lips_throat", "breathing_difficulty"]
+  },
+  {
+    "id": "guidance_suspected_trigger",
+    "text": "Ask specifically about anything new in the last 24 hours — a new medication, a new food, or an insect sting — since identifying the likely trigger is one of the most clinically useful pieces of information for an allergic reaction visit.",
+    "related_fields": ["suspected_trigger", "current_new_medications"]
+  },
+  {
+    "id": "guidance_prior_reaction_severity",
+    "text": "If the patient has had a similar reaction before, ask whether an epinephrine auto-injector (EpiPen) was used or prescribed at that time, since this indicates how severe past reactions have been.",
+    "related_fields": ["prior_similar_reactions", "epinephrine_auto_injector_used"]
+  },
+  {
+    "id": "guidance_progression",
+    "text": "Ask whether the rash or reaction is spreading or getting worse, since a rapidly spreading reaction is more urgent than one that is stable or improving.",
+    "related_fields": ["progression"]
+  }
+]

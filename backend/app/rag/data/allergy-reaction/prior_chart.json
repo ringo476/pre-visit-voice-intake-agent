@@ -1,0 +1,20 @@
+[
+  {
+    "id": "chart_1",
+    "text": "Patient has a documented penicillin allergy causing hives, noted from a visit in 2020.",
+    "field": "known_allergies",
+    "date": "2020-05-18"
+  },
+  {
+    "id": "chart_2",
+    "text": "Patient was prescribed cetirizine (an antihistamine) for a similar mild reaction 8 months ago.",
+    "field": "prior_similar_reactions",
+    "date": "2025-01-09"
+  },
+  {
+    "id": "chart_3",
+    "text": "No prior anaphylactic episodes or epinephrine auto-injector prescriptions documented in the chart.",
+    "field": "epinephrine_auto_injector_used",
+    "date": "2025-01-09"
+  }
+]

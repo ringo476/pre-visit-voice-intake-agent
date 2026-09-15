@@ -16,6 +16,7 @@ DEFAULT_PROTOCOL_ID = "respiratory-intake"
 _PROTOCOL_FILES = {
     "respiratory-intake": "respiratory_intake.json",
     "musculoskeletal-leg-injury": "musculoskeletal_leg_injury.json",
+    "allergy-reaction": "allergy_reaction.json",
 }
 
 

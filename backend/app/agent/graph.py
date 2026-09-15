@@ -209,3 +209,57 @@ def run_agent_turn(
     )
 
     return {"reply_text": reply_text, "superseded": False}
+
+
+def run_opening_turn(
+    session: SessionState,
+    reason_text: str,
+    when_text: Optional[str] = None,
+    llm: Optional[BaseChatModel] = None,
+    turn_generation: Optional[int] = None,
+) -> dict:
+    """Generates Ava's very first line, spoken before the patient has said
+    anything — used when the chief complaint (and, when given, the
+    appointment's date/time) is already known upfront, e.g. from a booking
+    record, instead of discovering the complaint live from what the patient
+    says. No patient transcript turn gets logged here (nothing was said
+    yet); only the resulting opening line is appended, as the first entry
+    in session.transcript.
+
+    The trigger is sent as a HumanMessage rather than a trailing
+    SystemMessage: Gemini requires the final turn in a request to be a user
+    message or a function response (see run_agent_turn's system_note
+    ordering, fixed for the same reason) — a synthetic instruction still
+    needs to occupy the "user" slot to satisfy that.
+    """
+    compiled = build_graph(session, llm=llm, turn_generation=turn_generation)
+
+    when_clause = f' scheduled for {when_text},' if when_text else ""
+    opening_trigger = (
+        f"[This is the start of the call. The patient has an upcoming appointment{when_clause} "
+        f'regarding: "{reason_text}". Open the conversation by warmly greeting them, mentioning when '
+        f"the appointment is, and referencing this reason directly, then ask your first relevant "
+        f'question. Do not ask an open-ended "what brings you in today" question — you already know '
+        f"why they're here.]"
+    )
+    messages: list[BaseMessage] = [
+        SystemMessage(content=AGENT_PERSONA_INSTRUCTIONS),
+        HumanMessage(content=opening_trigger),
+    ]
+
+    result = compiled.invoke({"messages": messages}, config={"recursion_limit": MAX_TOOL_ROUNDS * 2 + 2})
+
+    if turn_generation is not None and session.turn_generation != turn_generation:
+        return {"reply_text": "", "superseded": True}
+
+    reply_text = ""
+    for msg in reversed(result["messages"]):
+        if isinstance(msg, AIMessage) and msg.content:
+            reply_text = _extract_text(msg.content)
+            break
+
+    session.transcript.append(
+        TranscriptTurn(id=str(uuid.uuid4()), speaker="agent", text=reply_text, timestamp=datetime.now(timezone.utc).isoformat())
+    )
+
+    return {"reply_text": reply_text, "superseded": False}

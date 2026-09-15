@@ -5,7 +5,9 @@ JSON control/state messages + binary audio out)."""
 import asyncio
 import json
 import os
+import random
 import uuid
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -18,10 +20,34 @@ from app.documents.document_ingest import SUPPORTED_IMAGE_MIME_TYPES, Unsupporte
 from app.documents.document_store import add_document, clear_session, create_uploaded_document
 from app.output.brief_generator import format_clinician_brief_as_text, generate_clinician_brief
 from app.output.fhir_export import generate_fhir_export
+from app.protocol.registry import get_protocol
 from app.state_engine import get_missing_fields
-from app.turn_controller import TurnOutcome, handle_utterance, run_text_turn
+from app.turn_controller import TurnOutcome, handle_utterance, run_opening_line, run_text_turn
 
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
+
+# Stands in for a real appointment/booking system: in an actual pre-visit
+# voice agent, the clinic's calendar already carries a date/time and a
+# reason for the visit by the time the call happens, so both are known
+# upfront rather than discovered live from what the patient says. No real
+# scheduling/EHR integration exists here — one of these three is picked at
+# random per session so the "protocol already known" flow can be
+# demonstrated against any of the three checklists.
+MOCK_APPOINTMENTS = [
+    {"protocol_id": "respiratory-intake", "reason_text": "chest discomfort and fever"},
+    {"protocol_id": "musculoskeletal-leg-injury", "reason_text": "pain and swelling in the left ankle after a fall"},
+    {"protocol_id": "allergy-reaction", "reason_text": "a skin rash and reaction after starting a new medication"},
+]
+
+
+def _mock_appointment_details() -> dict:
+    appointment = random.choice(MOCK_APPOINTMENTS)
+    visit_time = datetime.now() + timedelta(days=random.randint(1, 3), hours=random.randint(0, 8))
+    return {
+        "protocol_id": appointment["protocol_id"],
+        "reason_text": appointment["reason_text"],
+        "when_text": visit_time.strftime("%A, %B %d at %I:%M %p"),
+    }
 
 app = FastAPI(title="Pre-Visit Voice Intake Agent")
 app.add_middleware(
@@ -95,8 +121,11 @@ async def _push_state_delta(ws: WebSocket, session: SessionState) -> None:
 
 async def _send_turn_outcome(ws: WebSocket, session: SessionState, outcome: TurnOutcome) -> None:
     """Shared by the WS voice-turn handler and the HTTP document-upload
-    handler so both push results identically."""
-    await ws.send_json({"type": "transcript", "speaker": "patient", "text": outcome.transcript})
+    handler so both push results identically. `outcome.transcript` is empty
+    for the opening line (Ava speaks first, before the patient has said
+    anything) — no patient transcript line to send in that case."""
+    if outcome.transcript:
+        await ws.send_json({"type": "transcript", "speaker": "patient", "text": outcome.transcript})
     await ws.send_json({"type": "transcript", "speaker": "agent", "text": outcome.reply_text})
     await _push_state_delta(ws, session)
     await ws.send_json({"type": "voice_state", "state": "speaking"})
@@ -149,16 +178,27 @@ async def upload_document(session_id: str, file: UploadFile = File(...)):
 async def voice_socket(websocket: WebSocket):
     await websocket.accept()
 
-    # No protocol is chosen up front — the patient just starts talking, and
-    # turn_controller's deterministic classifier picks the checklist from
-    # what they actually say (see app/protocol/classifier.py).
+    # Simulating a real pre-visit call: the appointment's date/time and
+    # reason are already known (standing in for a booking/EHR record), so
+    # the protocol is locked immediately rather than discovered live from
+    # what the patient says (contrast with turn_controller's deterministic
+    # classifier, still used if that reason ever changes mid-conversation).
+    appointment = _mock_appointment_details()
     session_id = str(uuid.uuid4())
-    session = create_session(session_id)
+    session = create_session(session_id, protocol=get_protocol(appointment["protocol_id"]))
     sessions[session_id] = session
     session_sockets[session_id] = websocket
 
     await websocket.send_json({"type": "session_started", "session_id": session_id})
     await _push_state_delta(websocket, session)
+
+    try:
+        opening_outcome = await asyncio.to_thread(
+            run_opening_line, session, appointment["reason_text"], appointment["when_text"]
+        )
+        await _send_turn_outcome(websocket, session, opening_outcome)
+    except Exception as e:  # noqa: BLE001
+        print(f"[{session_id}] opening line failed: {e}")
 
     try:
         while True:

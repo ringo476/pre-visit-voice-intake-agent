@@ -51,6 +51,20 @@
       "keywords": ["spreading", "getting bigger", "streaking", "red streak"],
       "action": "urgent_escalation",
       "scripted_message": "Redness that is spreading, along with warmth, can be a sign of a skin infection that may need prompt treatment. Please consider being seen today at urgent care rather than waiting for your scheduled appointment."
+    },
+    {
+      "id": "anaphylaxis_airway_swelling",
+      "field": "swelling_face_lips_throat",
+      "keywords": ["throat closing", "throat tightening", "throat is tight", "can't swallow", "cant swallow", "tongue swelling", "tongue is swelling", "lips swelling", "face swelling", "swelling in my throat"],
+      "action": "emergency_escalation",
+      "scripted_message": "Swelling of the face, lips, tongue, or throat can be a sign of a severe allergic reaction (anaphylaxis). Please stop this intake and call 911 (or your local emergency number) or go to the nearest emergency room right now. If you have an epinephrine auto-injector (EpiPen), use it now if instructed to do so."
+    },
+    {
+      "id": "anaphylaxis_dizziness",
+      "field": "dizziness_or_fainting",
+      "keywords": ["dizzy", "lightheaded", "light-headed", "feel like i'm going to pass out", "about to faint"],
+      "action": "urgent_escalation",
+      "scripted_message": "Dizziness during an allergic reaction can be an early warning sign of a more serious reaction. Please consider being seen today at urgent care or an emergency room rather than waiting for your scheduled appointment."
     }
   ],
   "global_keywords": [

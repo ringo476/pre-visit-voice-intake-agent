@@ -1,0 +1,28 @@
+{
+  "protocol_id": "allergy-reaction",
+  "name": "Allergic Reaction Intake",
+  "keywords": [
+    "allergy", "allergies", "allergic", "rash", "hives", "itching", "itchy", "welts",
+    "swelling", "swollen", "reaction", "anaphylaxis", "epipen", "epinephrine",
+    "dizzy", "dizziness", "faint", "fainting",
+    "throat closing", "throat is closing", "tongue swelling", "breaking out", "red spots", "sting", "stung", "bee sting"
+  ],
+  "fields": [
+    { "field": "chief_complaint", "label": "Reason for visit", "category": "reason", "required": true },
+    { "field": "onset", "label": "Onset", "category": "timeline", "required": true },
+    { "field": "suspected_trigger", "label": "Suspected trigger (food, medication, insect sting, contact, unknown)", "category": "timeline", "required": true },
+    { "field": "reaction_description", "label": "Reaction description (hives, rash, itching, etc.)", "category": "character", "required": true },
+    { "field": "affected_areas", "label": "Affected areas of the body", "category": "character", "required": true },
+    { "field": "progression", "label": "Progression (improving/worsening/spreading)", "category": "timeline", "required": true },
+    { "field": "swelling_face_lips_throat", "label": "Swelling of face, lips, tongue, or throat", "category": "associated_symptoms", "required": true },
+    { "field": "breathing_difficulty", "label": "Shortness of breath / difficulty breathing", "category": "associated_symptoms", "required": true },
+    { "field": "dizziness_or_fainting", "label": "Dizziness or feeling faint", "category": "associated_symptoms", "required": true },
+    { "field": "prior_similar_reactions", "label": "Prior similar reactions", "category": "history", "required": true },
+    { "field": "known_allergies", "label": "Known allergies", "category": "history", "required": true },
+    { "field": "known_allergy_reaction_description", "label": "Known allergy: reaction description", "category": "history", "required": false, "required_if": "known_allergies" },
+    { "field": "epinephrine_auto_injector_used", "label": "Epinephrine auto-injector (EpiPen) used", "category": "medications", "required": true },
+    { "field": "medications_tried", "label": "Medications already tried for this reaction", "category": "medications", "required": true },
+    { "field": "current_new_medications", "label": "Recently started new medications", "category": "medications", "required": true },
+    { "field": "patient_concerns", "label": "Patient's primary concern / expectations", "category": "concerns", "required": true }
+  ]
+}

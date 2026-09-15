@@ -22,7 +22,7 @@ and landing a stale reply in the transcript.
 from dataclasses import dataclass
 from typing import Optional
 
-from app.agent.graph import run_agent_turn
+from app.agent.graph import run_agent_turn, run_opening_turn
 from app.agent.session import SessionState, assign_protocol
 from app.protocol.classifier import classify_complaint
 from app.protocol.registry import get_protocol
@@ -130,6 +130,19 @@ def run_text_turn(session: SessionState, patient_text: str, generation: Optional
         return TurnOutcome(transcript=patient_text, reply_text="", audio=b"", superseded=True)
     audio_out = synthesize_speech(result["reply_text"])
     return TurnOutcome(transcript=patient_text, reply_text=result["reply_text"], audio=audio_out)
+
+
+def run_opening_line(session: SessionState, reason_text: str, when_text: Optional[str] = None) -> TurnOutcome:
+    """Generates and synthesizes Ava's opening line for a session whose
+    chief complaint (and, when given, appointment date/time) is already
+    known upfront (session.protocol is already locked at creation, not
+    discovered live) — e.g. simulating a real pre-visit call where the
+    clinic's booking already named a reason and a time for the visit.
+    `transcript` comes back empty: no patient utterance kicked this off,
+    Ava is speaking first."""
+    result = run_opening_turn(session, reason_text, when_text=when_text)
+    audio_out = synthesize_speech(result["reply_text"])
+    return TurnOutcome(transcript="", reply_text=result["reply_text"], audio=audio_out)
 
 
 def _classify_and_note(session: SessionState, patient_text: str) -> Optional[str]:
