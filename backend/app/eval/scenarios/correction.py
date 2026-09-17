@@ -17,7 +17,6 @@ correction_scenario = EvalScenario(
                 {
                     "name": "record_patient_correction",
                     "args": {
-                        "fact_id": "$LAST_FACT_ID:onset",
                         "field": "onset",
                         "new_value": "approximately 2 weeks ago",
                         "evidence": "it started two weeks ago, not last Monday",

@@ -16,7 +16,7 @@ from app.documents.document_store import add_document, create_uploaded_document
 from app.eval.types import EvalScenario, ScenarioTurn
 from app.protocol.registry import get_protocol
 from app.schemas.intake_record import Source
-from app.state_engine import get_current_facts, get_current_fact, get_missing_fields
+from app.state_engine import get_current_facts, get_missing_fields
 
 EVIDENCE_REQUIRED_SOURCES = {Source.PATIENT_REPORTED, Source.ASKED_AND_DENIED, Source.DOCUMENT_SOURCED}
 
@@ -24,16 +24,11 @@ EVIDENCE_REQUIRED_SOURCES = {Source.PATIENT_REPORTED, Source.ASKED_AND_DENIED, S
 def _resolve_placeholders(args: dict, session) -> dict:
     """Scenario tool-call args may reference state produced earlier in the
     conversation via a small placeholder syntax, resolved against the live
-    session right before dispatch — e.g. "$LAST_QUESTION_EVENT_ID" or
-    "$LAST_FACT_ID:onset"."""
+    session right before dispatch — e.g. "$LAST_QUESTION_EVENT_ID"."""
     resolved = {}
     for key, value in args.items():
         if value == "$LAST_QUESTION_EVENT_ID":
             resolved[key] = session.question_events[-1].id if session.question_events else None
-        elif isinstance(value, str) and value.startswith("$LAST_FACT_ID:"):
-            field_name = value.split(":", 1)[1]
-            fact = get_current_fact(session.record, field_name)
-            resolved[key] = fact.id if fact else None
         else:
             resolved[key] = value
     return resolved

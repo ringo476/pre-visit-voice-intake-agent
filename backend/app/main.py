@@ -193,6 +193,7 @@ async def voice_socket(websocket: WebSocket):
     await _push_state_delta(websocket, session)
 
     try:
+        await websocket.send_json({"type": "voice_state", "state": "thinking"})
         opening_outcome = await asyncio.to_thread(
             run_opening_line, session, appointment["reason_text"], appointment["when_text"]
         )
@@ -230,6 +231,11 @@ async def voice_socket(websocket: WebSocket):
                     outcome = await asyncio.to_thread(handle_utterance, session, message["bytes"], my_generation)
                     if not outcome.superseded:
                         await _send_turn_outcome(websocket, session, outcome)
+                    else:
+                        # Empty transcription or a stale/interrupted turn: no
+                        # reply to speak, but the client still needs telling
+                        # to stop waiting and start listening again.
+                        await websocket.send_json({"type": "voice_state", "state": "listening"})
                 except (WebSocketDisconnect, RuntimeError):
                     # Client already gone (e.g. it disconnected while this
                     # turn was still running) — nothing to send back to.

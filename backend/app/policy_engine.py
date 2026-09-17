@@ -28,9 +28,28 @@ class SafetyResult:
 _NOT_TRIGGERED = SafetyResult(triggered=False)
 
 
+_NEGATION_WORDS = {"no", "not", "n't", "denies", "denied", "without", "never", "none", "negative", "isn't", "wasn't", "doesn't", "didn't", "hasn't"}
+_NEGATION_WINDOW = 8  # words to look back from a match before treating it as a real (non-negated) hit
+
+
 def _matches_keyword(text: str, keywords: list[str]) -> bool:
+    """Plain substring matching, but skips a hit that's immediately negated
+    (e.g. "no swelling on my face", "denies any dizziness") — otherwise a
+    patient explicitly ruling a symptom out would trip the same rule as
+    actually reporting it, since the keyword text is identical either way."""
     lower = text.lower()
-    return any(k.lower() in lower for k in keywords)
+    for keyword in keywords:
+        kw = keyword.lower()
+        start = 0
+        while True:
+            idx = lower.find(kw, start)
+            if idx == -1:
+                break
+            preceding_words = lower[:idx].split()[-_NEGATION_WINDOW:]
+            if not any(w.strip(".,!?") in _NEGATION_WORDS for w in preceding_words):
+                return True
+            start = idx + 1
+    return False
 
 
 def _to_result(rule: dict) -> SafetyResult:

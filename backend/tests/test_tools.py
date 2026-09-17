@@ -106,11 +106,41 @@ def test_record_patient_correction_supersedes_original():
     fact_id = first.data["fact_id"]
 
     corrected = handlers["record_patient_correction"](
-        {"fact_id": fact_id, "field": "onset", "new_value": "2 weeks ago", "evidence": "Actually, two weeks ago", "confidence": 0.92}
+        {"field": "onset", "new_value": "2 weeks ago", "evidence": "Actually, two weeks ago", "confidence": 0.92}
     )
     assert corrected.ok is True
     assert len(session.record.facts) == 2
     assert session.record.facts[1].supersedes == fact_id
+
+
+def test_record_patient_correction_works_without_the_model_ever_seeing_a_fact_id():
+    """The model only ever needs the field name — the prior fact is looked
+    up server-side, since an id from an earlier turn's tool result isn't
+    visible to the model in a later turn (each turn's message list is
+    rebuilt from session.transcript alone, not past tool-call history)."""
+    session = create_session("s1", PROTOCOL)
+    handlers = create_tool_handlers(session)
+
+    handlers["update_intake_record"](
+        {"field": "onset", "value": "10 days ago", "source": "patient_reported", "evidence": "It started last Monday", "confidence": 0.9}
+    )
+
+    corrected = handlers["record_patient_correction"](
+        {"field": "onset", "new_value": "2 weeks ago", "evidence": "Actually, two weeks ago", "confidence": 0.92}
+    )
+    assert corrected.ok is True
+    current = next(f for f in session.record.facts if f.status.value == "corrected")
+    assert current.value == "2 weeks ago"
+
+
+def test_record_patient_correction_rejects_field_never_recorded():
+    session = create_session("s1", PROTOCOL)
+    handlers = create_tool_handlers(session)
+
+    result = handlers["record_patient_correction"](
+        {"field": "onset", "new_value": "2 weeks ago", "evidence": "it was two weeks ago", "confidence": 0.9}
+    )
+    assert result.ok is False
 
 
 def test_check_safety_protocol_triggers_on_statement():

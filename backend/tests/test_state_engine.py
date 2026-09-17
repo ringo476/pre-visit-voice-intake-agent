@@ -60,7 +60,7 @@ def test_record_correction_preserves_original_and_links_via_supersedes():
     record = apply_fact(record, "onset", "10 days ago", Source.PATIENT_REPORTED, "It started last Monday", 0.9, [])
     original_id = get_current_fact(record, "onset").id
 
-    record = record_correction(record, original_id, "onset", "2 weeks ago", "Actually, two weeks ago", 0.92)
+    record = record_correction(record, "onset", "2 weeks ago", "Actually, two weeks ago", 0.92)
 
     current = get_current_fact(record, "onset")
     assert current.value == "2 weeks ago"
@@ -71,10 +71,10 @@ def test_record_correction_preserves_original_and_links_via_supersedes():
     assert original.value == "10 days ago"
 
 
-def test_record_correction_rejects_unknown_fact_id():
+def test_record_correction_rejects_field_with_no_current_fact():
     record = create_empty_record("s1", "test-protocol")
     with pytest.raises(ProvenanceViolationError):
-        record_correction(record, "does-not-exist", "onset", "2 weeks ago", "...", 0.9)
+        record_correction(record, "onset", "2 weeks ago", "...", 0.9)
 
 
 def test_missing_fields_flags_required_fields_with_no_fact():

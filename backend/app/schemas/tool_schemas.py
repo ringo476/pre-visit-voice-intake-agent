@@ -23,7 +23,6 @@ class UpdateIntakeRecordArgs(BaseModel):
 
 
 class RecordPatientCorrectionArgs(BaseModel):
-    fact_id: str
     field: str
     new_value: str
     evidence: str

@@ -110,7 +110,7 @@ def create_tool_handlers(session: SessionState) -> dict[str, ToolHandler]:
 
         try:
             session.record = record_correction(
-                session.record, args.fact_id, args.field, args.new_value, args.evidence, args.confidence
+                session.record, args.field, args.new_value, args.evidence, args.confidence
             )
         except ProvenanceViolationError as e:
             return _fail(str(e))
@@ -157,7 +157,17 @@ def create_tool_handlers(session: SessionState) -> dict[str, ToolHandler]:
 
         missing = get_missing_fields(session.record, session.protocol)
         if not missing:
-            return _ok({"missing_fields": [], "done": True})
+            return _ok(
+                {
+                    "missing_fields": [],
+                    "done": True,
+                    "message": (
+                        "Everything required has been covered. Before finishing, read back the key facts "
+                        "you've gathered to the patient in your own words and ask them to confirm or correct "
+                        "anything, then call generate_clinician_brief."
+                    ),
+                }
+            )
 
         next_field = missing[0]
         guidance_results = retrieve_follow_up_guidance(

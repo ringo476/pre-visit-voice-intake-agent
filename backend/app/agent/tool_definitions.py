@@ -44,17 +44,20 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "record_patient_correction",
-        "description": "Use when the patient corrects something they said earlier, instead of update_intake_record. Preserves the original statement.",
+        "description": (
+            "Use when the patient wants to redo or correct something already recorded for a field — including "
+            "when they say it was captured wrong and ask you to ask them again. Preserves the original statement; "
+            "just name the field, the current value for it is looked up automatically."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "fact_id": {"type": "string", "description": "The id of the fact being corrected, from an earlier update_intake_record result."},
                 "field": {"type": "string", "description": "The field being corrected."},
                 "new_value": {"type": "string", "description": "The corrected value."},
                 "evidence": {"type": "string", "description": "The patient's own words making the correction, verbatim."},
                 "confidence": {"type": "number", "description": "0 to 1 confidence in this correction."},
             },
-            "required": ["fact_id", "field", "new_value", "evidence", "confidence"],
+            "required": ["field", "new_value", "evidence", "confidence"],
         },
     },
     {

@@ -70,6 +70,11 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   const silenceTimerRef = useRef<number | null>(null);
   const isRecordingRef = useRef(false);
   const isPlayingRef = useRef(false);
+  // True from the moment a recorded utterance is sent until the backend's
+  // reply starts arriving — blocks the VAD loop from starting another
+  // recording while a turn is already in flight, so repeating yourself
+  // while the agent is "thinking" doesn't queue up several separate turns.
+  const turnInFlightRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const vadRafRef = useRef<number | null>(null);
 
@@ -97,6 +102,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       recordedChunksRef.current = [];
       console.log("[VAD] recorder stopped, blob size:", blob.size, "ws readyState:", wsRef.current?.readyState);
       if (blob.size > 0) {
+        turnInFlightRef.current = true;
         blob.arrayBuffer().then((buf) => wsRef.current?.send(buf));
       }
     };
@@ -144,7 +150,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
           stopPlayback();
           wsRef.current?.send(JSON.stringify({ type: "barge_in" }));
           startRecording();
-        } else if (!isRecordingRef.current) {
+        } else if (!isRecordingRef.current && !turnInFlightRef.current) {
           startRecording();
         }
         if (silenceTimerRef.current) {
@@ -158,6 +164,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   }
 
   function playAudio(data: ArrayBuffer) {
+    stopPlayback();
     const blob = new Blob([data], { type: "audio/mp3" });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
@@ -197,6 +204,12 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
         ]);
         break;
       case "voice_state":
+        // "speaking" (a reply is on its way) and "listening" (e.g. after an
+        // error, per main.py's error-recovery path) both mean this turn is
+        // over — safe to accept a new recording again.
+        if (msg.state === "speaking" || msg.state === "listening") {
+          turnInFlightRef.current = false;
+        }
         setVoiceState(msg.state as VoiceState);
         break;
       case "error":
@@ -234,6 +247,11 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      // The backend speaks first (the opening line) the instant this
+      // connection opens — that first turn is already "in flight" from
+      // this exact moment, before any recording of ours triggers the usual
+      // lock, so lock the mic here too until it actually starts speaking.
+      turnInFlightRef.current = true;
       setVoiceState("listening");
       vadRafRef.current = window.setInterval(vadLoop, 100);
     };
@@ -253,16 +271,25 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       setVoiceState("error");
     };
     ws.onclose = () => {
+      // The connection can drop for reasons other than the user clicking
+      // "I'm done" (backend restart, network blip) — clean up fully here
+      // too, otherwise any in-progress audio/recording/VAD loop just keeps
+      // running orphaned after the UI has already reset to the welcome screen.
+      cleanupLocalMedia();
       setVoiceState((prev) => (prev === "error" ? prev : "idle"));
     };
   }
 
-  function endSession() {
+  function cleanupLocalMedia() {
     if (vadRafRef.current) window.clearInterval(vadRafRef.current);
     stopPlayback();
     stopRecording();
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     audioContextRef.current?.close().catch(() => {});
+  }
+
+  function endSession() {
+    cleanupLocalMedia();
     wsRef.current?.close();
     setVoiceState("idle");
   }

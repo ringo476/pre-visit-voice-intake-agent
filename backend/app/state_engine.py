@@ -74,20 +74,23 @@ def apply_fact(
 
 def record_correction(
     record: IntakeRecord,
-    fact_id: str,
     field: str,
     new_value: str,
     evidence_span: str,
     confidence: float,
 ) -> IntakeRecord:
-    """Appends a corrected version of a fact. The prior fact is left
-    untouched; the new fact's `supersedes` links back to it."""
-    prior = next((f for f in record.facts if f.id == fact_id), None)
+    """Appends a corrected version of the current fact for `field`. The
+    prior fact is left untouched; the new fact's `supersedes` links back to
+    it. Looks up the current fact by field name rather than taking a prior
+    fact id from the caller — an id from an earlier update_intake_record
+    result is only ever visible within that same turn's own tool-call
+    history, never in later turns (each turn rebuilds its message list from
+    session.transcript alone), so a caller several turns later has no
+    reliable id to supply. The field name, by contrast, is always known."""
+    prior = get_current_fact(record, field)
     if prior is None:
-        raise ProvenanceViolationError(f'Cannot correct unknown fact id "{fact_id}"')
-    if prior.field != field:
         raise ProvenanceViolationError(
-            f'Correction targets field "{field}" but fact "{fact_id}" belongs to field "{prior.field}"'
+            f'Cannot correct "{field}" — nothing has been recorded for it yet; use update_intake_record instead'
         )
 
     timestamp = _now()
@@ -129,6 +132,19 @@ class MissingField(BaseModel):
     category: str
 
 
+_DENIAL_WORDS = {"no", "none", "false", "negative", "denied", "n/a", "na"}
+
+
+def _looks_like_denial(value: str) -> bool:
+    """A fact's source (e.g. patient_reported) only says how the value was
+    obtained, not what it says — a fact can be patient_reported AND a
+    denial ("no medication allergies") at once. This is a best-effort check
+    of the value text itself, since the model phrases denials consistently
+    as leading "no"/"none" in this codebase's own tool-call data."""
+    first_word = value.strip().lower().split(" ")[0].strip(".,!?") if value.strip() else ""
+    return value.strip() == "" or first_word in _DENIAL_WORDS
+
+
 def get_missing_fields(record: IntakeRecord, protocol: ProtocolConfig) -> list[MissingField]:
     """Fields the protocol still needs. A conditional field (`required_if`)
     only becomes required once the referenced field has an affirmative
@@ -142,7 +158,7 @@ def get_missing_fields(record: IntakeRecord, protocol: ProtocolConfig) -> list[M
 
     def is_affirmed(field: str) -> bool:
         fact = current.get(field)
-        return fact is not None and fact.source in AFFIRMATIVE_SOURCES
+        return fact is not None and fact.source in AFFIRMATIVE_SOURCES and not _looks_like_denial(fact.value)
 
     missing: list[MissingField] = []
     for pf in protocol.fields:
