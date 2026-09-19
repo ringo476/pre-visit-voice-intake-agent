@@ -29,7 +29,17 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 async def init_db() -> None:
-    """Creates any missing tables. Safe to call on every server startup —
-    does nothing to tables that already exist."""
+    """Creates any missing tables directly from the current ORM models.
+    Safe to call on every server startup for local/zero-setup dev — does
+    nothing to tables that already exist, and requires no separate command.
+
+    This is NOT how schema changes should reach a real deployment, though:
+    `create_all` only ever adds missing tables, it never alters an existing
+    one (add a column, change a type, etc.), so a schema change made after
+    the first deploy would silently do nothing here. Real deployments
+    should run `alembic upgrade head` (see backend/alembic/) instead, which
+    tracks and applies versioned migrations — `alembic revision
+    --autogenerate -m "..."` after changing a model in persistence.py,
+    review the generated migration, then apply it."""
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -29,7 +29,7 @@ interface VoiceSessionContextValue {
   transcript: TranscriptEntry[];
   intake: IntakeState;
   errorMessage: string | null;
-  startSession: () => Promise<void>;
+  startSession: (consentGiven: boolean) => Promise<void>;
   endSession: () => void;
   uploadDocument: (file: File) => Promise<void>;
 }
@@ -39,10 +39,11 @@ const VoiceSessionContext = createContext<VoiceSessionContextValue | null>(null)
 const WS_URL = (import.meta.env.VITE_WS_URL as string | undefined) ?? "ws://localhost:8080/ws";
 
 // Persisted client-side so a dropped connection or a page reload can pick
-// the same conversation back up (via the backend's ?resume= query param)
-// instead of silently starting over — the whole point of the backend now
-// persisting sessions to a real database instead of only server memory.
+// the same conversation back up — the token (not just the session id) is
+// what actually authorizes reconnecting as this patient; the backend
+// verifies it on every connection, it isn't just carried along for show.
 const SESSION_STORAGE_KEY = "voiceIntakeSessionId";
+const TOKEN_STORAGE_KEY = "voiceIntakeAccessToken";
 
 // Tuned empirically in a real deployment; a fixed energy threshold is a
 // reasonable MVP stand-in for a proper VAD model.
@@ -230,9 +231,45 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function startSession() {
+  async function startSession(consentGiven: boolean) {
     setErrorMessage(null);
     setVoiceState("connecting");
+
+    let storedToken: string | null = null;
+    try {
+      storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+    } catch {
+      storedToken = null;
+    }
+
+    // Resuming an appointment already booked (and already consented to)
+    // needs no new consent check — that was recorded once, at booking time.
+    // Starting fresh does: the backend refuses to create a session at all
+    // without it, so failing fast here with a clear message is kinder than
+    // letting the request round-trip just to be rejected.
+    let accessToken = storedToken;
+    if (!accessToken) {
+      if (!consentGiven) {
+        setErrorMessage("Please confirm you consent to this conversation being handled by an AI assistant before starting.");
+        setVoiceState("error");
+        return;
+      }
+      try {
+        const { bookMockAppointment } = await import("../lib/apiClient");
+        const booking = await bookMockAppointment(true);
+        accessToken = booking.access_token;
+        try {
+          localStorage.setItem(TOKEN_STORAGE_KEY, booking.access_token);
+        } catch {
+          // Private browsing / storage disabled — the session still works
+          // for this tab, it just can't survive a reload.
+        }
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : "Failed to book the appointment.");
+        setVoiceState("error");
+        return;
+      }
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -254,13 +291,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    let resumeId: string | null = null;
-    try {
-      resumeId = localStorage.getItem(SESSION_STORAGE_KEY);
-    } catch {
-      resumeId = null;
-    }
-    const wsUrl = resumeId ? `${WS_URL}?resume=${encodeURIComponent(resumeId)}` : WS_URL;
+    const wsUrl = `${WS_URL}?token=${encodeURIComponent(accessToken)}`;
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
@@ -290,12 +321,25 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       setErrorMessage("Connection to the intake service failed. Is the backend running?");
       setVoiceState("error");
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       // The connection can drop for reasons other than the user clicking
       // "I'm done" (backend restart, network blip) — clean up fully here
       // too, otherwise any in-progress audio/recording/VAD loop just keeps
       // running orphaned after the UI has already reset to the welcome screen.
       cleanupLocalMedia();
+      // The backend's custom close codes (4401/4403/4404, see main.py's
+      // voice_socket) mean the stored token itself was rejected — missing,
+      // tampered, expired, or the session no longer exists. Retrying with
+      // that same bad token would just fail again the same way, so clear
+      // it and let the next "Start" do a fresh booking instead.
+      if (event.code >= 4400) {
+        try {
+          localStorage.removeItem(SESSION_STORAGE_KEY);
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+        } catch {
+          // Nothing to clean up if storage was never available.
+        }
+      }
       setVoiceState((prev) => (prev === "error" ? prev : "idle"));
     };
   }
@@ -313,6 +357,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     wsRef.current?.close();
     try {
       localStorage.removeItem(SESSION_STORAGE_KEY);
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
     } catch {
       // Nothing to clean up if storage was never available.
     }

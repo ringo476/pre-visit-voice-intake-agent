@@ -79,6 +79,34 @@ async def test_load_unknown_session_returns_none(temp_db):
 
 
 @pytest.mark.asyncio
+async def test_consent_timestamp_survives_the_round_trip(temp_db):
+    session = create_session(str(uuid.uuid4()), protocol=get_protocol("respiratory-intake"), consent_given_at="2026-01-01T00:00:00Z")
+    await persistence.save_session(session)
+    restored = await persistence.load_session(session.session_id)
+    assert restored.consent_given_at == "2026-01-01T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_session_with_no_consent_recorded_reloads_as_none(temp_db):
+    session = create_session(str(uuid.uuid4()), protocol=get_protocol("respiratory-intake"))
+    await persistence.save_session(session)
+    restored = await persistence.load_session(session.session_id)
+    assert restored.consent_given_at is None
+
+
+@pytest.mark.asyncio
+async def test_access_log_records_entries_in_order_and_is_never_wiped_by_save_session(temp_db):
+    session = create_session(str(uuid.uuid4()), protocol=get_protocol("respiratory-intake"))
+    await persistence.save_session(session)
+    await persistence.record_access(session.session_id, "brief_viewed")
+    await persistence.record_access(session.session_id, "fhir_exported")
+    await persistence.save_session(session)  # a later, unrelated save must not clear the audit trail
+
+    log = await persistence.get_access_log(session.session_id)
+    assert [entry["action"] for entry in log] == ["brief_viewed", "fhir_exported"]
+
+
+@pytest.mark.asyncio
 async def test_resaving_a_session_replaces_child_rows_instead_of_duplicating(temp_db):
     """save_session gets called after every turn — the second save must not
     leave stale duplicate rows for facts/turns that already existed."""

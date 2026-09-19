@@ -26,6 +26,14 @@ from app.agent.graph import run_agent_turn, run_opening_turn
 from app.agent.session import SessionState, assign_protocol
 from app.protocol.classifier import classify_complaint
 from app.protocol.registry import get_protocol
+from app.retry import call_with_retry
+
+# Below this, a transcription is trusted structurally but not blindly: it's
+# passed to the reasoning model in the transcript as usual (rejecting it
+# outright would mean the patient's actual words could never even reach a
+# clarifying follow-up), but any fact extracted from that specific turn
+# never gets to claim it was clearly heard — see LOW_CONFIDENCE_NOTE below.
+STT_CONFIDENCE_THRESHOLD = 0.6
 
 _cached_stt_client = None
 _cached_tts_client = None
@@ -67,9 +75,12 @@ def transcribe_utterance(audio: bytes, encoding: str = "WEBM_OPUS", sample_rate_
     frontend's own voice-activity detection, not server-side streaming
     endpointing."""
     client = _get_stt_client()
-    response = client.recognize(
-        config={"encoding": encoding, "sample_rate_hertz": sample_rate_hertz, "language_code": "en-US"},
-        audio={"content": audio},
+    response = call_with_retry(
+        lambda: client.recognize(
+            config={"encoding": encoding, "sample_rate_hertz": sample_rate_hertz, "language_code": "en-US"},
+            audio={"content": audio},
+        ),
+        what="Speech-to-Text",
     )
     if not response.results:
         return TranscriptionResult(text="", confidence=None)
@@ -83,10 +94,13 @@ def synthesize_speech(text: str) -> bytes:
     the agent chooses to say is never itself a clinical fact, so any TTS
     voice/engine is fine here."""
     client = _get_tts_client()
-    response = client.synthesize_speech(
-        input={"text": text},
-        voice={"language_code": "en-US", "ssml_gender": "FEMALE"},
-        audio_config={"audio_encoding": "MP3"},
+    response = call_with_retry(
+        lambda: client.synthesize_speech(
+            input={"text": text},
+            voice={"language_code": "en-US", "ssml_gender": "FEMALE"},
+            audio_config={"audio_encoding": "MP3"},
+        ),
+        what="Text-to-Speech",
     )
     if not response.audio_content:
         raise RuntimeError("Text-to-speech returned no audio content")
@@ -111,10 +125,32 @@ def handle_utterance(session: SessionState, audio: bytes, generation: Optional[i
         # "the client gets nothing for this attempt" to main.py, which
         # fits here too.
         return TurnOutcome(transcript="", reply_text="", audio=b"", superseded=True)
-    return run_text_turn(session, transcription.text, generation=generation)
+
+    # A low-confidence transcription still gets sent through — rejecting it
+    # outright would mean whatever the patient actually said could never
+    # even reach a clarifying follow-up. But it shouldn't be trusted the
+    # same as a clean one: flag it so the model knows to record anything it
+    # extracts this turn as less certain, or check back with the patient,
+    # rather than silently treating "salbutamol" misheard as "salicylate"
+    # with full confidence.
+    low_confidence_note = None
+    if transcription.confidence is not None and transcription.confidence < STT_CONFIDENCE_THRESHOLD:
+        low_confidence_note = (
+            f"The speech-to-text transcription of the patient's last message has low confidence "
+            f"({transcription.confidence:.2f}); some words may be mistranscribed. Use a lower confidence "
+            f"value when recording any fact extracted from this specific message, and if anything critical "
+            f"was unclear, briefly confirm it with the patient rather than assuming it was heard correctly."
+        )
+
+    return run_text_turn(session, transcription.text, generation=generation, extra_system_note=low_confidence_note)
 
 
-def run_text_turn(session: SessionState, patient_text: str, generation: Optional[int] = None) -> TurnOutcome:
+def run_text_turn(
+    session: SessionState,
+    patient_text: str,
+    generation: Optional[int] = None,
+    extra_system_note: Optional[str] = None,
+) -> TurnOutcome:
     """Runs one turn from already-known text rather than recorded audio —
     used when a document upload triggers a synthetic 'patient' turn (see
     main.py's upload endpoint). Shares the agent graph and TTS step with
@@ -123,8 +159,13 @@ def run_text_turn(session: SessionState, patient_text: str, generation: Optional
     `generation` is None for the document-upload path (nothing there races
     against a barge-in) and the live turn_generation snapshot for voice
     turns. When the turn comes back superseded, no audio is synthesized for
-    a reply nobody is waiting to hear."""
-    system_note = _classify_and_note(session, patient_text)
+    a reply nobody is waiting to hear.
+
+    `extra_system_note` (currently only the low-STT-confidence warning from
+    handle_utterance) is combined with the deterministic classifier note,
+    when both are present, rather than one silently overwriting the other."""
+    notes = [n for n in (_classify_and_note(session, patient_text), extra_system_note) if n]
+    system_note = "\n".join(notes) if notes else None
     result = run_agent_turn(session, patient_text, system_note=system_note, turn_generation=generation)
     if result.get("superseded"):
         return TurnOutcome(transcript=patient_text, reply_text="", audio=b"", superseded=True)

@@ -8,10 +8,11 @@ interface WelcomeScreenProps {
 export function WelcomeScreen({ onStart }: WelcomeScreenProps) {
   const { startSession, errorMessage } = useVoiceSession();
   const [starting, setStarting] = useState(false);
+  const [consented, setConsented] = useState(false);
 
   async function handleStart() {
     setStarting(true);
-    await startSession();
+    await startSession(consented);
     setStarting(false);
     onStart();
   }
@@ -31,7 +32,15 @@ export function WelcomeScreen({ onStart }: WelcomeScreenProps) {
           local emergency number now.
         </p>
 
-        <button className="primary-button" onClick={handleStart} disabled={starting}>
+        <label className="consent-checkbox">
+          <input type="checkbox" checked={consented} onChange={(e) => setConsented(e.target.checked)} />
+          <span>
+            I understand this conversation will be recorded and processed by an AI assistant to help prepare for my
+            appointment, and I consent to that.
+          </span>
+        </label>
+
+        <button className="primary-button" onClick={handleStart} disabled={starting || !consented}>
           {starting ? "Requesting microphone…" : "Start voice intake"}
         </button>
 

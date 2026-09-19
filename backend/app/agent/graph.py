@@ -14,6 +14,7 @@ Gemini-backed model from get_llm().
 
 import json
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -24,14 +25,26 @@ from langgraph.graph import END, MessagesState, StateGraph
 
 from app.agent.instructions import AGENT_PERSONA_INSTRUCTIONS
 from app.agent.session import SessionState
+from app.logging_config import get_logger
+from app.retry import call_with_retry
 from app.agent.tool_definitions import build_tool_definitions
 from app.agent.tools import ToolResult, create_tool_handlers
 from app.schemas.protocol_config import ProtocolConfig
 from app.schemas.intake_record import TranscriptTurn
 
+logger = get_logger(__name__)
+
 MAX_TOOL_ROUNDS = 6
 
 _cached_llms: dict[Optional[str], BaseChatModel] = {}
+# Guards _cached_llms specifically. This dict is written from inside
+# asyncio.to_thread calls (main.py's handle_utterance/run_opening_line path),
+# which means genuinely different OS threads — not just different asyncio
+# tasks on one thread — can race on "check if cached, then build and store."
+# A plain threading.Lock is required here, not an asyncio.Lock: the race is
+# between real threads, and asyncio.Lock only protects coroutines sharing a
+# single thread's event loop, so it would not actually close this race.
+_cached_llms_lock = threading.Lock()
 
 
 def get_llm(protocol: Optional[ProtocolConfig] = None) -> BaseChatModel:
@@ -46,26 +59,37 @@ def get_llm(protocol: Optional[ProtocolConfig] = None) -> BaseChatModel:
     real field names (see tool_definitions.build_tool_definitions), so the
     model can no longer guess a plausible-but-wrong field name. There are
     only a handful of protocols, so caching one bound client per protocol_id
-    costs nothing beyond the first turn of each."""
+    costs nothing beyond the first turn of each.
+
+    Double-checked locking: the fast, common path (already cached) never
+    touches the lock at all; the lock is only ever acquired on a cache miss,
+    and the cache is checked again once inside it — closing a real race
+    where two patients' first turns for the same protocol land on different
+    threads at nearly the same moment, previously letting both build a
+    separate client and one silently overwrite the other's wasted work."""
     global _cached_llms
     cache_key = protocol.protocol_id if protocol else None
     if cache_key in _cached_llms:
         return _cached_llms[cache_key]
 
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not set. Required to run the live voice pipeline; not required for "
-            "the state-engine/tool-layer/eval test suite."
-        )
+    with _cached_llms_lock:
+        if cache_key in _cached_llms:  # someone else built it while we waited for the lock
+            return _cached_llms[cache_key]
 
-    from langchain_google_genai import ChatGoogleGenerativeAI
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not set. Required to run the live voice pipeline; not required for "
+                "the state-engine/tool-layer/eval test suite."
+            )
 
-    field_names = [f.field for f in protocol.fields] if protocol else None
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key).bind_tools(build_tool_definitions(field_names))
-    _cached_llms[cache_key] = llm
-    return llm
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        field_names = [f.field for f in protocol.fields] if protocol else None
+        model_name = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+        llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key).bind_tools(build_tool_definitions(field_names))
+        _cached_llms[cache_key] = llm
+        return llm
 
 
 def _tool_result_to_payload(result: ToolResult) -> dict:
@@ -116,12 +140,18 @@ def build_graph(
     def reason(state: MessagesState) -> MessagesState:
         if _is_stale():
             return {"messages": [AIMessage(content="")]}
-        print(f"[{session.session_id}] calling model with {len(state['messages'])} messages:")
-        for m in state["messages"]:
-            role = type(m).__name__
-            tool_calls = getattr(m, "tool_calls", None)
-            print(f"  {role}: content={str(m.content)[:80]!r} tool_calls={tool_calls}")
-        response = model.invoke(state["messages"])
+        logger.debug(
+            "calling model",
+            extra={
+                "session_id": session.session_id,
+                "message_count": len(state["messages"]),
+                "messages": [
+                    {"role": type(m).__name__, "content_preview": str(m.content)[:80], "tool_calls": getattr(m, "tool_calls", None)}
+                    for m in state["messages"]
+                ],
+            },
+        )
+        response = call_with_retry(lambda: model.invoke(state["messages"]), what="Gemini reasoning call")
         return {"messages": [response]}
 
     def should_continue(state: MessagesState) -> str:

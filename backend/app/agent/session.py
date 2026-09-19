@@ -42,14 +42,35 @@ class SessionState:
     # superseded by a newer one and stops itself rather than making further
     # model calls or writing facts from stale context.
     turn_generation: int = 0
+    # None until the patient explicitly consents to this conversation being
+    # handled by an AI assistant — required before the voice call proceeds
+    # at all (see main.py's /api/appointments/mock and the WebSocket's
+    # rejection of a session with no consent on file).
+    consent_given_at: Optional[str] = None
+    # Set once, at booking time (main.py's /api/appointments/mock), and
+    # persisted rather than kept only in server memory — so the exact
+    # appointment reason/time survive a restart between booking and the
+    # patient actually joining the call, the same durability guarantee
+    # everything else in the session now has.
+    appointment_reason_text: Optional[str] = None
+    appointment_when_text: Optional[str] = None
 
 
-def create_session(session_id: str, protocol: Optional[ProtocolConfig] = None) -> SessionState:
+def create_session(
+    session_id: str,
+    protocol: Optional[ProtocolConfig] = None,
+    consent_given_at: Optional[str] = None,
+    appointment_reason_text: Optional[str] = None,
+    appointment_when_text: Optional[str] = None,
+) -> SessionState:
     protocol_id = protocol.protocol_id if protocol else UNCLASSIFIED_PROTOCOL_ID
     return SessionState(
         session_id=session_id,
         protocol=protocol,
         record=create_empty_record(session_id, protocol_id),
+        consent_given_at=consent_given_at,
+        appointment_reason_text=appointment_reason_text,
+        appointment_when_text=appointment_when_text,
     )
 
 

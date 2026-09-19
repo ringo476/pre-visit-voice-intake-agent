@@ -14,6 +14,7 @@ project's scale: each turn adds at most a handful of rows, so a delete-then-
 reinsert is cheap, and it's impossible for it to drift out of sync with the
 in-memory state the way a hand-written incremental merge could."""
 
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -38,6 +39,24 @@ class SessionRow(Base):
     updated_at: Mapped[str] = mapped_column(String)
     brief_finalized: Mapped[bool] = mapped_column(Boolean, default=False)
     turn_generation: Mapped[int] = mapped_column(Integer, default=0)
+    consent_given_at: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    appointment_reason_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    appointment_when_text: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
+class AccessLogRow(Base):
+    """Who (or what) accessed a session's clinical data, and when — distinct
+    from the clinical safety_log, which is about escalations, not access
+    control. A compliance requirement, not just an engineering nicety: real
+    healthcare systems must be able to answer "who looked at this patient's
+    record, and when" after the fact."""
+
+    __tablename__ = "access_log"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, ForeignKey("sessions.session_id"), index=True)
+    action: Mapped[str] = mapped_column(String)
+    timestamp: Mapped[str] = mapped_column(String)
 
 
 class FactRow(Base):
@@ -125,6 +144,9 @@ async def save_session(session: SessionState) -> None:
             updated_at=_now(),
             brief_finalized=session.brief_finalized,
             turn_generation=session.turn_generation,
+            consent_given_at=session.consent_given_at,
+            appointment_reason_text=session.appointment_reason_text,
+            appointment_when_text=session.appointment_when_text,
         )
         await db.merge(row)
 
@@ -260,7 +282,32 @@ async def load_session(session_id: str) -> Optional[SessionState]:
         documents=[UploadedDocument(id=d.id, filename=d.filename, mime_type=d.mime_type, text=d.text, uploaded_at=d.uploaded_at) for d in docs],
         brief_finalized=row.brief_finalized,
         turn_generation=row.turn_generation,
+        consent_given_at=row.consent_given_at,
+        appointment_reason_text=row.appointment_reason_text,
+        appointment_when_text=row.appointment_when_text,
     )
+
+
+async def record_access(session_id: str, action: str) -> None:
+    """Appends one entry to the access-audit log — never overwritten,
+    never replaced on the next save_session (unlike facts/transcript,
+    which are fully replaced each save, this is genuinely append-only,
+    since an audit log that could be rewritten wouldn't be much of one)."""
+    factory = get_session_factory()
+    async with factory() as db:
+        db.add(AccessLogRow(id=str(uuid.uuid4()), session_id=session_id, action=action, timestamp=_now()))
+        await db.commit()
+
+
+async def get_access_log(session_id: str) -> list[dict]:
+    factory = get_session_factory()
+    async with factory() as db:
+        rows = (
+            (await db.execute(select(AccessLogRow).where(AccessLogRow.session_id == session_id).order_by(AccessLogRow.timestamp)))
+            .scalars()
+            .all()
+        )
+    return [{"action": r.action, "timestamp": r.timestamp} for r in rows]
 
 
 async def list_sessions(limit: int = 50) -> list[dict]:
