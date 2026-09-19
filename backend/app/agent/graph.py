@@ -77,7 +77,12 @@ def _tool_result_to_payload(result: ToolResult) -> dict:
     return payload
 
 
-def build_graph(session: SessionState, llm: Optional[BaseChatModel] = None, turn_generation: Optional[int] = None):
+def build_graph(
+    session: SessionState,
+    llm: Optional[BaseChatModel] = None,
+    turn_generation: Optional[int] = None,
+    ranking_llm: Optional[BaseChatModel] = None,
+):
     """Compiles the graph for one session. `llm` is injectable for tests.
 
     `turn_generation` is the value session.turn_generation held when this
@@ -89,9 +94,21 @@ def build_graph(session: SessionState, llm: Optional[BaseChatModel] = None, turn
     happening before: an interrupted turn ran to completion in the
     background regardless, its stale reply landing in the transcript and
     confusing the next turn into re-extracting facts already recorded), each
-    node checks first and stops immediately once stale."""
-    handlers = create_tool_handlers(session)
+    node checks first and stops immediately once stale.
+
+    `ranking_llm` backs the adaptive next-question ordering in
+    question_prioritizer.py. It defaults to the same resolved model as
+    `model` — but only when `llm` wasn't explicitly overridden. Tests
+    inject rigid, positional scripted fakes as `llm` (see test_graph.py's
+    FakeLLM): those fakes have no idea an extra ranking call could ever
+    happen, and an unplanned call would silently consume and shift every
+    later scripted response. So ranking only turns on automatically in the
+    real production path (no `llm` override); a test that wants to exercise
+    it must opt in explicitly via `ranking_llm`."""
     model = llm or get_llm(session.protocol)
+    if ranking_llm is None and llm is None:
+        ranking_llm = model
+    handlers = create_tool_handlers(session, ranking_llm)
 
     def _is_stale() -> bool:
         return turn_generation is not None and session.turn_generation != turn_generation
@@ -159,6 +176,7 @@ def run_agent_turn(
     llm: Optional[BaseChatModel] = None,
     system_note: Optional[str] = None,
     turn_generation: Optional[int] = None,
+    ranking_llm: Optional[BaseChatModel] = None,
 ) -> dict:
     """Runs one full patient turn: logs the utterance, replays the
     session's transcript-so-far as the conversation history (tool-call
@@ -184,7 +202,7 @@ def run_agent_turn(
         )
     )
 
-    compiled = build_graph(session, llm=llm, turn_generation=turn_generation)
+    compiled = build_graph(session, llm=llm, turn_generation=turn_generation, ranking_llm=ranking_llm)
 
     messages: list[BaseMessage] = [SystemMessage(content=AGENT_PERSONA_INSTRUCTIONS)]
     if system_note:
@@ -217,6 +235,7 @@ def run_opening_turn(
     when_text: Optional[str] = None,
     llm: Optional[BaseChatModel] = None,
     turn_generation: Optional[int] = None,
+    ranking_llm: Optional[BaseChatModel] = None,
 ) -> dict:
     """Generates Ava's very first line, spoken before the patient has said
     anything — used when the chief complaint (and, when given, the
@@ -232,7 +251,7 @@ def run_opening_turn(
     ordering, fixed for the same reason) — a synthetic instruction still
     needs to occupy the "user" slot to satisfy that.
     """
-    compiled = build_graph(session, llm=llm, turn_generation=turn_generation)
+    compiled = build_graph(session, llm=llm, turn_generation=turn_generation, ranking_llm=ranking_llm)
 
     when_clause = f' scheduled for {when_text},' if when_text else ""
     opening_trigger = (

@@ -2,6 +2,7 @@ backend/.venv/
 **/__pycache__/
 backend/.pytest_cache/
 backend/.chroma_data/
+backend/app_data.db
 .env
 backend/.env
 frontend/.env

@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import ValidationError
 
+from app.agent.question_prioritizer import rank_next_field
 from app.agent.session import AssistanceRequest, SessionState
 from app.documents.document_store import retrieve_from_documents
 from app.rag.retriever import retrieve_follow_up_guidance, retrieve_prior_chart
@@ -60,7 +62,7 @@ def _safety_payload(result: SafetyResult) -> Optional[dict]:
 ToolHandler = Callable[[dict], ToolResult]
 
 
-def create_tool_handlers(session: SessionState) -> dict[str, ToolHandler]:
+def create_tool_handlers(session: SessionState, llm: Optional[BaseChatModel] = None) -> dict[str, ToolHandler]:
     def update_intake_record(raw_args: dict) -> ToolResult:
         try:
             args = UpdateIntakeRecordArgs(**raw_args)
@@ -170,6 +172,15 @@ def create_tool_handlers(session: SessionState) -> dict[str, ToolHandler]:
             )
 
         next_field = missing[0]
+        if llm is not None:
+            # Advisory reordering only — see question_prioritizer.py for the
+            # guardrail: any failure here silently keeps the fixed-order
+            # default above, and nothing is ever dropped from `missing`,
+            # only reordered for which gets asked this turn.
+            ranked = rank_next_field(missing, get_current_facts(session.record), llm)
+            if ranked:
+                next_field = next(m for m in missing if m.field == ranked)
+
         guidance_results = retrieve_follow_up_guidance(
             session.protocol.protocol_id, f"{next_field.label} {next_field.field}", k=1
         )

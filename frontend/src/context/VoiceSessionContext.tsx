@@ -38,6 +38,12 @@ const VoiceSessionContext = createContext<VoiceSessionContextValue | null>(null)
 
 const WS_URL = (import.meta.env.VITE_WS_URL as string | undefined) ?? "ws://localhost:8080/ws";
 
+// Persisted client-side so a dropped connection or a page reload can pick
+// the same conversation back up (via the backend's ?resume= query param)
+// instead of silently starting over — the whole point of the backend now
+// persisting sessions to a real database instead of only server memory.
+const SESSION_STORAGE_KEY = "voiceIntakeSessionId";
+
 // Tuned empirically in a real deployment; a fixed energy threshold is a
 // reasonable MVP stand-in for a proper VAD model.
 const SPEECH_ENERGY_THRESHOLD = 0.06;
@@ -185,6 +191,12 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       case "session_started":
         sessionIdRef.current = msg.session_id as string;
         setSessionId(msg.session_id as string);
+        try {
+          localStorage.setItem(SESSION_STORAGE_KEY, msg.session_id as string);
+        } catch {
+          // Private browsing / storage disabled — resume-on-reconnect just
+          // won't be available this session, nothing else depends on it.
+        }
         break;
       case "state_delta":
         setIntake({
@@ -242,7 +254,15 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const ws = new WebSocket(WS_URL);
+    let resumeId: string | null = null;
+    try {
+      resumeId = localStorage.getItem(SESSION_STORAGE_KEY);
+    } catch {
+      resumeId = null;
+    }
+    const wsUrl = resumeId ? `${WS_URL}?resume=${encodeURIComponent(resumeId)}` : WS_URL;
+
+    const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
@@ -291,6 +311,11 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   function endSession() {
     cleanupLocalMedia();
     wsRef.current?.close();
+    try {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      // Nothing to clean up if storage was never available.
+    }
     setVoiceState("idle");
   }
 

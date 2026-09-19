@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+from langchain_core.messages import AIMessage
+
 from app.agent.session import create_session
 from app.agent.tools import create_tool_handlers
 from app.schemas.document import UploadedDocument
@@ -13,6 +15,36 @@ os.environ.pop("GOOGLE_API_KEY", None)
 _PROTOCOL_PATH = Path(__file__).parent.parent / "app" / "protocol" / "respiratory_intake.json"
 with open(_PROTOCOL_PATH, "r", encoding="utf-8") as f:
     PROTOCOL = ProtocolConfig(**json.load(f))
+
+
+class FakeRankingLLM:
+    def __init__(self, reply: str):
+        self.reply = reply
+
+    def invoke(self, messages):
+        return AIMessage(content=self.reply)
+
+
+def test_get_next_intake_question_honors_ranking_llm_when_given():
+    session = create_session("s1", PROTOCOL)
+    handlers = create_tool_handlers(session, llm=FakeRankingLLM("chief_complaint"))
+    # respiratory_intake.json's fixed order starts with chief_complaint
+    # anyway, so pick a field that is NOT first in that order to prove the
+    # ranking result — not the default — is what actually got surfaced.
+    result = handlers["get_next_intake_question"]({})
+    first_missing_field = result.data["missing_fields"][0]["field"]
+    handlers2 = create_tool_handlers(create_session("s2", PROTOCOL), llm=FakeRankingLLM("fever"))
+    result2 = handlers2["get_next_intake_question"]({})
+    assert result2.data["suggested"]["field"] == "fever"
+    assert first_missing_field != "fever"  # sanity: fever isn't first in fixed order
+
+
+def test_get_next_intake_question_falls_back_when_ranking_llm_hallucinates():
+    session = create_session("s1", PROTOCOL)
+    handlers = create_tool_handlers(session, llm=FakeRankingLLM("not_a_real_field"))
+    result = handlers["get_next_intake_question"]({})
+    # Falls back to the deterministic fixed order (first missing field).
+    assert result.data["suggested"]["field"] == result.data["missing_fields"][0]["field"]
 
 
 def test_update_intake_record_records_patient_reported_fact_no_safety_trigger():
