@@ -387,8 +387,11 @@ I have not run the real Gemini model against it yet (Q25), so I cannot report an
 | A field called `favorite_color` | **Rejected** by check c |
 | `confidence: 5` | **Rejected** by check a (Pydantic) |
 | `patient_reported`, `evidence="I have no allergies"` (never said) | **Saved.** Check d only applies to "no" and "I don't know" answers |
+| `patient_reported` with a real quote but the wrong value (patient said "Yes, I felt feverish", model sends `value="no"`) | **Saved.** The quote is real; nothing compares the value to what it means |
+| `inferred` with **no quote at all** | **Saved.** `inferred` needs no evidence, so nothing is checked |
+| `document_sourced` with a made-up quote, when **no document was ever uploaded** | **Saved.** Nothing checks the quote against an uploaded document |
 
-That last row is the real gap. Nothing compares a `patient_reported` quote to the transcript.
+The last four rows are the real gap, and I confirmed each by running it. Only two of the six labels, `asked_and_denied` and `uncertain`, are verified. The other labels are accepted on the model's word: `patient_reported` (quote and value are not checked), `inferred` (no quote needed) and `document_sourced` (quote not checked against the uploads).
 
 **They push with:** *"Why not just check every quote?"*
 The same whole-word check could be applied to every fact that needs a quote. I held back because models often paraphrase quotes slightly, and enforcing it everywhere could reject good facts and make the conversation brittle. I would first measure how often real quotes fail, then turn it on with a fuzzy-match threshold. The fix is small, which is exactly why it should be done with data rather than by guess.
@@ -427,7 +430,7 @@ A patient volunteering a "no" about something unasked ("and I have no allergies"
 **Short answer:** The `patient_reported` quote is not verified against the transcript, so an invented quote labelled that way is saved (Q11). Second, the verifier and the main model are by default the same model family.
 
 **Full explanation:** Ranked by risk:
-1. **`patient_reported` with an invented or wrong quote.** Plus the subtler version: a real quote, wrong meaning. Example: the patient says "my dad has asthma" and the model records `respiratory_history: asthma` for the patient. The quote is real; the fact is wrong. The read-back at the end of the call is the best protection, because the patient hears the facts and can correct them.
+1. **Labels other than `asked_and_denied` and `uncertain` are not verified** (see the table in Q11): `patient_reported` with an invented quote or a wrong value, `inferred` with no evidence, `document_sourced` with no matching upload. Plus the subtler version: a real quote, wrong meaning. Example: the patient says "my dad has asthma" and the model records `respiratory_history: asthma` for the patient. The quote is real; the fact is wrong. The read-back at the end of the call is the best protection, because the patient hears the facts and can correct them.
 2. **Correlated errors** between the main model and the verifier.
 3. **No check on what Ava says** (diagnosis, reassurance).
 4. **`_looks_like_denial`** (Q27) still guesses a value is a "no" from its first word.
@@ -672,7 +675,7 @@ Better degraded behavior: speak "I'm having trouble, a staff member will contact
 | Gap | Why it matters | Fix |
 |---|---|---|
 | No evaluation with the real model; verifier never run on live Gemini | Quality unproven | Run `verifier_check` with a key; simulated-patient eval |
-| `patient_reported` quote not verified against the transcript | An invented quote is saved (demonstrated) | Same whole-word check for every fact, measured first |
+| Only `asked_and_denied` and `uncertain` are verified; `patient_reported`, `inferred` and `document_sourced` are taken on the model's word | A made-up fact, a wrong value, an evidence-free `inferred` fact, or a fake document quote is saved (all demonstrated) | Quote-in-transcript check for `patient_reported`; quote-in-uploaded-text check and an uploads-exist check for `document_sourced`; restrict `inferred` to the known booking reason; value-vs-reply check |
 | Verifier shares a model family with the main agent by default | Correlated errors | Different or smaller `GEMINI_VERIFIER_MODEL`, chosen by `verifier_check` |
 | Verifier outage blocks "no" answers (fail closed) | Conversation can loop | Spoken fallback and automatic human handoff |
 | Spoken sentence not verified to be about the field; one question per turn | Two questions in a reply lose the first denial | Stamp the event whose field the text covers |
