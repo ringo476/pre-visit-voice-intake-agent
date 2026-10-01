@@ -211,3 +211,24 @@ def test_correcting_an_uncertain_answer_becomes_a_patient_reported_fact():
     record = apply_fact(create_empty_record("s1", "p"), "onset", "does not remember", Source.UNCERTAIN, "don't remember", 0.8, events, question_event_id="q1")
     record = record_correction(record, "onset", "3 weeks ago", "Oh, it was three weeks ago", 0.9)
     assert get_current_fact(record, "onset").source == Source.PATIENT_REPORTED
+
+
+def test_correcting_a_denial_to_a_yes_is_no_longer_labelled_a_denial():
+    """Patient says no fever, then 'actually I did have one'. The corrected
+    fact must not stay asked_and_denied, or the brief would still say the
+    patient denies it."""
+    events = [QuestionEvent(id="q1", field="fever", question_text="Fever", timestamp="t")]
+    record = apply_fact(create_empty_record("s1", "p"), "fever", "no", Source.ASKED_AND_DENIED, "No fever", 0.9, events, question_event_id="q1")
+
+    record = record_correction(record, "fever", "yes, 101 on Tuesday", "Actually I did have a fever, 101 on Tuesday", 0.9)
+
+    fact = get_current_fact(record, "fever")
+    assert fact.source == Source.PATIENT_REPORTED
+    assert fact.question_event_id is None  # no longer backed by the old question
+    assert fact.supersedes is not None  # the original denial is still preserved
+
+
+def test_correcting_a_patient_reported_fact_keeps_its_source_and_proof():
+    record = apply_fact(create_empty_record("s1", "p"), "onset", "10 days ago", Source.PATIENT_REPORTED, "last Monday", 0.9, [])
+    record = record_correction(record, "onset", "2 weeks ago", "two weeks ago", 0.9)
+    assert get_current_fact(record, "onset").source == Source.PATIENT_REPORTED

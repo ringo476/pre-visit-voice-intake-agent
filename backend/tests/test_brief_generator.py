@@ -90,3 +90,17 @@ def test_renders_an_uncertain_answer_as_unsure_never_as_a_denial():
 
     assert "Patient is unsure about onset." in text
     assert "denies" not in text.lower()
+
+
+def test_brief_reports_a_corrected_denial_as_a_positive_finding():
+    from app.state_engine import record_correction
+
+    record = create_empty_record("s1", PROTOCOL.protocol_id)
+    events = [QuestionEvent(id="q1", field="fever", question_text="Fever", timestamp="t")]
+    record = apply_fact(record, "fever", "no", "asked_and_denied", "No fever", 0.9, events, question_event_id="q1")
+    record = record_correction(record, "fever", "yes, about 101", "Actually I did have a fever, about 101", 0.9)
+
+    text = format_clinician_brief_as_text(generate_clinician_brief(record, PROTOCOL))
+
+    assert "denies fever" not in text.lower()
+    assert "yes, about 101" in text

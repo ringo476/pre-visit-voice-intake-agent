@@ -141,20 +141,30 @@ def record_correction(
             f'Cannot correct "{field}" — nothing has been recorded for it yet; use update_intake_record instead'
         )
 
+    # A correction is always the patient's own new statement. A prior that was
+    # never asked, "unsure", or a denial must not leak its source onto the new
+    # value: "I did have a fever after all" filed as asked_and_denied would
+    # render in the brief as "Patient denies fever".
+    new_source = (
+        Source.PATIENT_REPORTED
+        if prior.source in (Source.NOT_ASKED, Source.UNCERTAIN, Source.ASKED_AND_DENIED)
+        else prior.source
+    )
+
     timestamp = _now()
     corrected = Fact(
         id=str(uuid.uuid4()),
         field=field,
         value=new_value,
-        # A correction is always the patient's own new statement. An "unsure" or
-        # never-asked prior must not leak its source onto a real value.
-        source=Source.PATIENT_REPORTED if prior.source in (Source.NOT_ASKED, Source.UNCERTAIN) else prior.source,
+        source=new_source,
         evidence_span=evidence_span,
         confidence=confidence,
         status=FactStatus.CORRECTED,
         timestamp=timestamp,
         supersedes=prior.id,
-        question_event_id=prior.question_event_id,
+        # A changed source means the new value was not given in answer to the
+        # logged question, so it must not inherit that question's proof.
+        question_event_id=prior.question_event_id if new_source == prior.source else None,
     )
     return record.model_copy(update={"facts": [*record.facts, corrected], "updated_at": timestamp})
 

@@ -82,7 +82,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
     output/         brief_generator.py, fhir_export.py
     eval/           types.py, scenarios/, runner.py — 7 synthetic scenarios through the real graph
     main.py         FastAPI app: REST + WebSocket
-  tests/            pytest — 174 tests, no credentials required
+  tests/            pytest — 177 tests, no credentials required
 /frontend           React + Vite: welcome screen, live 3-pane conversation view (+ document upload), completion/clinician view
 ```
 
@@ -101,7 +101,7 @@ orchestration directly, with a scripted stand-in for Gemini):**
 
 ```bash
 cd backend
-.venv\Scripts\python.exe -m pytest -q          # 174 tests
+.venv\Scripts\python.exe -m pytest -q          # 177 tests
 .venv\Scripts\python.exe -m app.eval.runner    # 7 synthetic scenarios through the real graph
 ```
 
@@ -126,13 +126,13 @@ Copy `backend/.env.example` to `backend/.env` and fill in:
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to a GCP service account JSON with Cloud Speech-to-Text, Cloud
   Text-to-Speech, and Cloud Vision enabled
 
-Without these: all 174 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
+Without these: all 177 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
 and the LangGraph tests/eval use a scripted fake model), and the frontend UI works and shows a clear
 connection/microphone error rather than crashing.
 
 ## What's verified vs. what isn't
 
-**Fully tested (174 automated tests, no external dependency):** state engine provenance rules, safety
+**Fully tested (177 automated tests, no external dependency):** state engine provenance rules, safety
 engine, RAG retrieval (real Chroma vector store), document extraction router (real PDF text extraction via
 a generated test PDF; OCR path exercised with an injected fake), the full LangGraph orchestration loop
 (including a genuine loop-guard/recursion test), output generation (brief + FHIR), and the 7-scenario eval
