@@ -57,7 +57,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
 
 | Tool | What it does |
 |---|---|
-| `update_intake_record` | Record one fact, with a verbatim evidence quote and a `source` (patient_reported / asked_and_denied / document_sourced / inferred / not_asked) |
+| `update_intake_record` | Record one fact, with a verbatim evidence quote and a `source` (patient_reported / asked_and_denied / uncertain / document_sourced / inferred / not_asked) |
 | `record_patient_correction` | Correct an earlier fact without erasing it — appends a new version |
 | `check_safety_protocol` | Ask the deterministic safety engine to evaluate a concerning statement |
 | `get_next_intake_question` | Ask what's still missing per the protocol checklist, with RAG-suggested phrasing |
@@ -82,7 +82,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
     output/         brief_generator.py, fhir_export.py
     eval/           types.py, scenarios/, runner.py — 7 synthetic scenarios through the real graph
     main.py         FastAPI app: REST + WebSocket
-  tests/            pytest — 81 tests, no credentials required
+  tests/            pytest — 174 tests, no credentials required
 /frontend           React + Vite: welcome screen, live 3-pane conversation view (+ document upload), completion/clinician view
 ```
 
@@ -101,8 +101,8 @@ orchestration directly, with a scripted stand-in for Gemini):**
 
 ```bash
 cd backend
-.venv\Scripts\python.exe -m pytest -q          # 67 tests
-.venv\Scripts\python.exe -m app.eval.runner    # 6 synthetic scenarios through the real graph
+.venv\Scripts\python.exe -m pytest -q          # 174 tests
+.venv\Scripts\python.exe -m app.eval.runner    # 7 synthetic scenarios through the real graph
 ```
 
 **Running the app live** (needs credentials — see below):
@@ -126,16 +126,16 @@ Copy `backend/.env.example` to `backend/.env` and fill in:
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to a GCP service account JSON with Cloud Speech-to-Text, Cloud
   Text-to-Speech, and Cloud Vision enabled
 
-Without these: all 67 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
+Without these: all 174 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
 and the LangGraph tests/eval use a scripted fake model), and the frontend UI works and shows a clear
 connection/microphone error rather than crashing.
 
 ## What's verified vs. what isn't
 
-**Fully tested (67 automated tests, no external dependency):** state engine provenance rules, safety
+**Fully tested (174 automated tests, no external dependency):** state engine provenance rules, safety
 engine, RAG retrieval (real Chroma vector store), document extraction router (real PDF text extraction via
 a generated test PDF; OCR path exercised with an injected fake), the full LangGraph orchestration loop
-(including a genuine loop-guard/recursion test), output generation (brief + FHIR), and the 6-scenario eval
+(including a genuine loop-guard/recursion test), output generation (brief + FHIR), and the 7-scenario eval
 suite run through the real graph.
 
 **Verified structurally but not with real audio:** the backend boots and the WebSocket handshake/session
@@ -146,8 +146,24 @@ microphone — that's the one thing to smoke-test after adding your own keys.
 
 ## Safety design
 
-Three layers, deliberately not resting on the model's judgment alone:
+Four layers, deliberately not resting on the model's judgment alone:
 
 1. **Conversational instructions** ([`app/agent/instructions.py`](backend/app/agent/instructions.py)) — never diagnose, one question at a time, acknowledge uncertainty, escalate rather than improvise.
 2. **Deterministic safety policy** ([`app/policy_engine.py`](backend/app/policy_engine.py), rules in [`rules.json`](backend/app/rules.json)) — plain keyword-rule evaluation that runs on *every* fact write, regardless of whether the model called `check_safety_protocol`.
-3. **Clinician review** — every generated brief carries "Generated from a patient conversation. Review and verify before clinical use."
+3. **Answer provenance checks** ([`app/agent/tools.py`](backend/app/agent/tools.py), [`app/state_engine.py`](backend/app/state_engine.py), [`app/agent/answer_verifier.py`](backend/app/agent/answer_verifier.py)) — a recorded "no" (`asked_and_denied`) or "I don't know" (`uncertain`) is only accepted if the server finds a question about that exact field that was really spoken in an earlier turn, the quoted words appear in the patient's reply after it, and a separate Gemini call independently classifies that reply the same way. The model never handles question ids, and a verifier failure refuses the save rather than allowing it.
+4. **Clinician review** — every generated brief carries "Generated from a patient conversation. Review and verify before clinical use."
+
+### Checking the verifier against real Gemini
+
+The offline tests use a scripted stand-in for the verifier model, so they prove the wiring, not Gemini's accuracy.
+Once `GEMINI_API_KEY` is set, run the live check (set `GEMINI_VERIFIER_MODEL` first to try a smaller model):
+
+```bash
+cd backend
+.venv\Scripts\python.exe -m app.eval.verifier_check
+```
+
+### Running tests while the server is up
+
+The server and the test suite both build their reference stores in `backend/.chroma_data`. Running the tests while
+the server is running can make a retrieval test fail intermittently — stop the server first.

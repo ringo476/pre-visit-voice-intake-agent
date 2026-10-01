@@ -15,6 +15,9 @@ from pydantic import BaseModel, Field
 class Source(str, Enum):
     PATIENT_REPORTED = "patient_reported"
     ASKED_AND_DENIED = "asked_and_denied"
+    # The patient was asked and said they don't know / don't remember. Kept
+    # distinct from ASKED_AND_DENIED so "I don't know" can never be read as "no".
+    UNCERTAIN = "uncertain"
     DOCUMENT_SOURCED = "document_sourced"
     INFERRED = "inferred"
     NOT_ASKED = "not_asked"
@@ -63,6 +66,12 @@ class QuestionEvent(BaseModel):
     field: str
     question_text: str
     timestamp: str
+    # Index in session.transcript of the agent turn that actually spoke this
+    # question, and that turn's text. Both stay None until the reply is
+    # finalized: an event the tool layer logged but the agent never said
+    # (an abandoned or superseded turn) must not count as "asked".
+    asked_in_turn: Optional[int] = None
+    spoken_text: Optional[str] = None
 
 
 class TranscriptTurn(BaseModel):

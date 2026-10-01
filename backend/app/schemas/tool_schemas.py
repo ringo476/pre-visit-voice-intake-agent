@@ -18,7 +18,9 @@ class UpdateIntakeRecordArgs(BaseModel):
     # the backend rejects a write claiming those sources without one.
     evidence: Optional[str] = None
     confidence: float = Field(ge=0.0, le=1.0)
-    # Required by the backend when source == asked_and_denied.
+    # No longer part of the tool the model sees: the server resolves the
+    # question a denial answers itself (state_engine.find_asked_event). Still
+    # accepted and ignored so a model that sends one doesn't fail validation.
     question_event_id: Optional[str] = None
 
 

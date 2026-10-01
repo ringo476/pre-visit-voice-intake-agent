@@ -79,3 +79,14 @@ def test_formats_to_readable_text():
     assert "Reason for visit" in text
     assert "Information requiring clarification" in text
     assert "Generated from a patient conversation" in text
+
+
+def test_renders_an_uncertain_answer_as_unsure_never_as_a_denial():
+    record = create_empty_record("s1", PROTOCOL.protocol_id)
+    events = [QuestionEvent(id="q1", field="onset", question_text="Onset", timestamp="t")]
+    record = apply_fact(record, "onset", "does not remember", "uncertain", "I don't remember", 0.8, events, question_event_id="q1")
+
+    text = format_clinician_brief_as_text(generate_clinician_brief(record, PROTOCOL))
+
+    assert "Patient is unsure about onset." in text
+    assert "denies" not in text.lower()

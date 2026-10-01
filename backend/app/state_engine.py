@@ -3,16 +3,21 @@ provenance invariant: a fact can only claim ASKED_AND_DENIED if a matching
 question was actually logged first. This is what the tool layer calls;
 the reasoning model never touches this directly."""
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel
 
-from app.schemas.intake_record import Fact, FactStatus, IntakeRecord, QuestionEvent, Source
+from app.schemas.intake_record import Fact, FactStatus, IntakeRecord, QuestionEvent, Source, TranscriptTurn
 from app.schemas.protocol_config import ProtocolConfig
 
 AFFIRMATIVE_SOURCES = {Source.PATIENT_REPORTED, Source.DOCUMENT_SOURCED, Source.INFERRED}
+# Both of these are answers to a question the agent must really have asked:
+# "no" and "I don't know" each close a field without the patient volunteering
+# anything, so each needs proof the question was spoken first.
+SPOKEN_QUESTION_SOURCES = {Source.ASKED_AND_DENIED, Source.UNCERTAIN}
 
 
 class ProvenanceViolationError(Exception):
@@ -41,10 +46,11 @@ def apply_fact(
     question_event_id: Optional[str] = None,
 ) -> IntakeRecord:
     """Appends a new fact to the record. Never mutates or removes existing facts."""
-    if source == Source.ASKED_AND_DENIED:
+    source = Source(source)
+    if source in SPOKEN_QUESTION_SOURCES:
         if not question_event_id:
             raise ProvenanceViolationError(
-                f'Cannot record "{field}" as asked_and_denied without a question_event_id'
+                f'Cannot record "{field}" as {source.value} without a question_event_id'
             )
         event = next((e for e in question_events if e.id == question_event_id), None)
         if event is None:
@@ -70,6 +76,48 @@ def apply_fact(
         question_event_id=question_event_id,
     )
     return record.model_copy(update={"facts": [*record.facts, fact], "updated_at": timestamp})
+
+
+def find_asked_event(
+    question_events: list[QuestionEvent], field: str, before_turn: int
+) -> Optional[QuestionEvent]:
+    """The most recent question about `field` that was actually spoken in an
+    agent turn earlier than `before_turn` (an index into the transcript).
+    The server resolves this itself rather than trusting an id from the
+    model: the model only ever sees an event id inside the tool result of
+    the turn that created it, so it has nothing valid to hand back on the
+    turn where the patient actually answers."""
+    candidates = [
+        e
+        for e in question_events
+        if e.field == field and e.asked_in_turn is not None and e.asked_in_turn < before_turn
+    ]
+    return max(candidates, key=lambda e: e.asked_in_turn, default=None)
+
+
+def _normalize_for_match(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9\s]", " ", text.lower()).split())
+
+
+def patient_reply_after(transcript: list[TranscriptTurn], event: QuestionEvent) -> str:
+    """Everything the patient said after the agent spoke `event`'s question."""
+    if event.asked_in_turn is None:
+        return ""
+    return " ".join(t.text for t in transcript[event.asked_in_turn + 1 :] if t.speaker == "patient")
+
+
+def evidence_follows_question(transcript: list[TranscriptTurn], event: QuestionEvent, evidence: str) -> bool:
+    """True if `evidence` is a quote from something the patient said AFTER
+    the agent spoke `event`'s question. Punctuation and case are ignored,
+    since the model's quote and the STT transcript routinely differ in
+    those alone."""
+    needle = _normalize_for_match(evidence)
+    if not needle or event.asked_in_turn is None:
+        return False
+    patient_text_after = _normalize_for_match(patient_reply_after(transcript, event))
+    # Pad both sides so the quote must match whole words: a bare "no" must not
+    # count as found inside "I know".
+    return f" {needle} " in f" {patient_text_after} "
 
 
 def record_correction(
@@ -98,7 +146,9 @@ def record_correction(
         id=str(uuid.uuid4()),
         field=field,
         value=new_value,
-        source=Source.PATIENT_REPORTED if prior.source == Source.NOT_ASKED else prior.source,
+        # A correction is always the patient's own new statement. An "unsure" or
+        # never-asked prior must not leak its source onto a real value.
+        source=Source.PATIENT_REPORTED if prior.source in (Source.NOT_ASKED, Source.UNCERTAIN) else prior.source,
         evidence_span=evidence_span,
         confidence=confidence,
         status=FactStatus.CORRECTED,

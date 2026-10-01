@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from app.output.fhir_export import generate_fhir_export
+from app.schemas.intake_record import QuestionEvent
 from app.schemas.protocol_config import ProtocolConfig
 from app.state_engine import apply_fact, create_empty_record
 
@@ -50,3 +51,26 @@ def test_omits_allergy_intolerance_when_never_asked():
     record = create_empty_record("s1", PROTOCOL.protocol_id)
     bundle = generate_fhir_export(record, PROTOCOL)
     assert not any(e["resource"]["resourceType"] == "AllergyIntolerance" for e in bundle["entry"])
+
+
+def test_an_uncertain_medication_is_listed_with_provenance_but_never_asserted():
+    record = create_empty_record("s1", PROTOCOL.protocol_id)
+    events = [QuestionEvent(id="q1", field="medications_tried", question_text="Meds", timestamp="t")]
+    record = apply_fact(record, "medications_tried", "does not remember", "uncertain", "I don't remember", 0.8, events, question_event_id="q1")
+
+    bundle = generate_fhir_export(record, PROTOCOL)
+
+    qr = find_resource(bundle, "QuestionnaireResponse")
+    item = next(i for i in qr["item"] if i["linkId"] == "medications_tried")
+    assert {"url": "https://example.org/fhir/StructureDefinition/provenance-source", "valueCode": "uncertain"} in item["extension"]
+    assert not [e for e in bundle["entry"] if e["resource"]["resourceType"] == "MedicationStatement"]
+
+
+def test_an_uncertain_allergy_answer_does_not_create_an_allergy_record():
+    record = create_empty_record("s1", PROTOCOL.protocol_id)
+    events = [QuestionEvent(id="q1", field="medication_allergies", question_text="Allergies", timestamp="t")]
+    record = apply_fact(record, "medication_allergies", "does not know", "uncertain", "I'm not sure", 0.8, events, question_event_id="q1")
+
+    bundle = generate_fhir_export(record, PROTOCOL)
+
+    assert not [e for e in bundle["entry"] if e["resource"]["resourceType"] == "AllergyIntolerance"]

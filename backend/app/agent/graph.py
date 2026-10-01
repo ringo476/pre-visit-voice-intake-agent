@@ -45,6 +45,7 @@ _cached_llms: dict[Optional[str], BaseChatModel] = {}
 # between real threads, and asyncio.Lock only protects coroutines sharing a
 # single thread's event loop, so it would not actually close this race.
 _cached_llms_lock = threading.Lock()
+_cached_verifier_llm: Optional[BaseChatModel] = None
 
 
 def get_llm(protocol: Optional[ProtocolConfig] = None) -> BaseChatModel:
@@ -92,6 +93,32 @@ def get_llm(protocol: Optional[ProtocolConfig] = None) -> BaseChatModel:
         return llm
 
 
+def get_verifier_llm() -> BaseChatModel:
+    """The separate model that double-checks a recorded "no" / "I don't know"
+    against the patient's actual reply (see answer_verifier.py). Deliberately
+    NOT bound to any tools: it can only answer with a word, never act.
+    Uses GEMINI_VERIFIER_MODEL if set — point it at a smaller, cheaper model —
+    otherwise the same model as the main agent. Same double-checked locking
+    as get_llm, for the same reason (first calls from different threads)."""
+    global _cached_verifier_llm
+    if _cached_verifier_llm is not None:
+        return _cached_verifier_llm
+
+    with _cached_llms_lock:
+        if _cached_verifier_llm is not None:
+            return _cached_verifier_llm
+
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is not set. Required to run the live voice pipeline.")
+
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        model_name = os.environ.get("GEMINI_VERIFIER_MODEL") or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+        _cached_verifier_llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+        return _cached_verifier_llm
+
+
 def _tool_result_to_payload(result: ToolResult) -> dict:
     payload: dict = {"ok": result.ok}
     if result.data is not None:
@@ -106,6 +133,7 @@ def build_graph(
     llm: Optional[BaseChatModel] = None,
     turn_generation: Optional[int] = None,
     ranking_llm: Optional[BaseChatModel] = None,
+    verifier_llm: Optional[BaseChatModel] = None,
 ):
     """Compiles the graph for one session. `llm` is injectable for tests.
 
@@ -128,11 +156,18 @@ def build_graph(
     happen, and an unplanned call would silently consume and shift every
     later scripted response. So ranking only turns on automatically in the
     real production path (no `llm` override); a test that wants to exercise
-    it must opt in explicitly via `ranking_llm`."""
+    it must opt in explicitly via `ranking_llm`.
+
+    `verifier_llm` backs the independent check on recorded denials and
+    "I don't know" answers (answer_verifier.py), with the same rule: it
+    turns on automatically only in the real production path, and a test
+    opts in explicitly, so scripted fakes never see an unplanned extra call."""
     model = llm or get_llm(session.protocol)
     if ranking_llm is None and llm is None:
         ranking_llm = model
-    handlers = create_tool_handlers(session, ranking_llm)
+    if verifier_llm is None and llm is None:
+        verifier_llm = get_verifier_llm()
+    handlers = create_tool_handlers(session, ranking_llm, verifier_llm=verifier_llm)
 
     def _is_stale() -> bool:
         return turn_generation is not None and session.turn_generation != turn_generation
@@ -200,6 +235,25 @@ def _extract_text(content: object) -> str:
     return str(content)
 
 
+def _mark_spoken_question(session: SessionState, events_before: int) -> None:
+    """Stamps the question the agent just asked, once its reply is final.
+    get_next_intake_question logs a QuestionEvent the moment the tool runs,
+    which is before the agent has said anything — so logging alone proves
+    nothing was asked. Only the last event created this turn is stamped (the
+    persona asks one question per turn, and an earlier lookup in the same
+    turn may have been for a field the model then didn't ask about), and
+    only after the reply has been appended to the transcript, so
+    asked_in_turn is that agent turn's index. A turn that was superseded
+    never reaches here, so its events stay unstamped and can never back a
+    denial."""
+    new_events = session.question_events[events_before:]
+    if not new_events or not session.transcript[-1].text.strip():
+        return  # nothing was logged, or the reply was empty so nothing was actually said
+    event = new_events[-1]
+    event.asked_in_turn = len(session.transcript) - 1
+    event.spoken_text = session.transcript[-1].text
+
+
 def run_agent_turn(
     session: SessionState,
     patient_utterance: str,
@@ -207,6 +261,7 @@ def run_agent_turn(
     system_note: Optional[str] = None,
     turn_generation: Optional[int] = None,
     ranking_llm: Optional[BaseChatModel] = None,
+    verifier_llm: Optional[BaseChatModel] = None,
 ) -> dict:
     """Runs one full patient turn: logs the utterance, replays the
     session's transcript-so-far as the conversation history (tool-call
@@ -232,7 +287,10 @@ def run_agent_turn(
         )
     )
 
-    compiled = build_graph(session, llm=llm, turn_generation=turn_generation, ranking_llm=ranking_llm)
+    compiled = build_graph(
+        session, llm=llm, turn_generation=turn_generation, ranking_llm=ranking_llm, verifier_llm=verifier_llm
+    )
+    events_before = len(session.question_events)
 
     messages: list[BaseMessage] = [SystemMessage(content=AGENT_PERSONA_INSTRUCTIONS)]
     if system_note:
@@ -255,6 +313,7 @@ def run_agent_turn(
     session.transcript.append(
         TranscriptTurn(id=str(uuid.uuid4()), speaker="agent", text=reply_text, timestamp=datetime.now(timezone.utc).isoformat())
     )
+    _mark_spoken_question(session, events_before)
 
     return {"reply_text": reply_text, "superseded": False}
 
@@ -282,6 +341,7 @@ def run_opening_turn(
     needs to occupy the "user" slot to satisfy that.
     """
     compiled = build_graph(session, llm=llm, turn_generation=turn_generation, ranking_llm=ranking_llm)
+    events_before = len(session.question_events)
 
     when_clause = f' scheduled for {when_text},' if when_text else ""
     opening_trigger = (
@@ -310,5 +370,6 @@ def run_opening_turn(
     session.transcript.append(
         TranscriptTurn(id=str(uuid.uuid4()), speaker="agent", text=reply_text, timestamp=datetime.now(timezone.utc).isoformat())
     )
+    _mark_spoken_question(session, events_before)
 
     return {"reply_text": reply_text, "superseded": False}

@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphRecursionError
 
-from app.agent.graph import run_agent_turn
+from app.agent.graph import run_agent_turn, run_opening_turn
 from app.agent.session import create_session
 from app.schemas.protocol_config import ProtocolConfig
 
@@ -120,33 +120,158 @@ def test_loop_guard_raises_when_model_never_stops_calling_tools():
         run_agent_turn(session, "hello", llm=AlwaysCallsToolsLLM())
 
 
-def test_asked_and_denied_flow_across_rounds_using_question_event_from_tool():
+class _TwoTurnDenialLLM:
+    """Drives a realistic two-turn denial. Turn 1: ask what's missing, then
+    ask it aloud. Turn 2 (patient answers): record the denial WITHOUT any
+    question_event_id — the model has none in a later turn, because tool
+    results from earlier turns are never replayed to it."""
+
+    def __init__(self, session):
+        self.session = session
+        self.phase = 0
+
+    def invoke(self, messages):
+        self.phase += 1
+        if self.phase == 1:
+            return tool_call_message([{"name": "get_next_intake_question", "args": {}}])
+        if self.phase == 2:
+            return final_message("Have you had any fever?")
+        if self.phase == 3:
+            field = self.session.question_events[0].field
+            return tool_call_message(
+                [{"name": "update_intake_record", "args": {"field": field, "value": "false", "source": "asked_and_denied", "evidence": "No, not at all", "confidence": 0.9}}]
+            )
+        return final_message("Understood.")
+
+
+def test_denial_is_recorded_on_the_turn_after_the_question_was_spoken():
+    session = create_session("s1", PROTOCOL)
+    llm = _TwoTurnDenialLLM(session)
+
+    run_agent_turn(session, "hello", llm=llm)
+
+    event = session.question_events[0]
+    assert event.asked_in_turn == 1  # transcript: [patient hello, agent question]
+    assert event.spoken_text == "Have you had any fever?"
+
+    run_agent_turn(session, "No, not at all.", llm=llm)
+
+    assert len(session.record.facts) == 1
+    fact = session.record.facts[0]
+    assert fact.source.value == "asked_and_denied"
+    assert fact.question_event_id == event.id
+
+
+def test_denial_in_the_same_turn_as_the_question_is_rejected():
+    """The old behaviour: look up a question and immediately file a denial
+    for it before the patient has said anything. The question hasn't been
+    spoken yet, so there is nothing for the denial to answer."""
     session = create_session("s1", PROTOCOL)
 
-    # Round 1: ask what's missing. Round 2: deny it using the just-issued
-    # question_event_id. Round 3: final reply.
-    class SequencedLLM:
+    class SameTurnLLM:
         def __init__(self):
-            self.call_count = 0
+            self.n = 0
 
         def invoke(self, messages):
-            self.call_count += 1
-            if self.call_count == 1:
+            self.n += 1
+            if self.n == 1:
                 return tool_call_message([{"name": "get_next_intake_question", "args": {}}])
-            if self.call_count == 2:
+            if self.n == 2:
                 field = session.question_events[0].field
-                qid = session.question_events[0].id
                 return tool_call_message(
-                    [
-                        {
-                            "name": "update_intake_record",
-                            "args": {"field": field, "value": "false", "source": "asked_and_denied", "evidence": "No, not at all", "confidence": 0.9, "question_event_id": qid},
-                        }
-                    ]
+                    [{"name": "update_intake_record", "args": {"field": field, "value": "false", "source": "asked_and_denied", "evidence": "No, not at all", "confidence": 0.9}}]
                 )
             return final_message("Understood.")
 
-    result = run_agent_turn(session, "hello", llm=SequencedLLM())
-    assert result["reply_text"] == "Understood."
-    assert len(session.record.facts) == 1
-    assert session.record.facts[0].source.value == "asked_and_denied"
+    run_agent_turn(session, "No, not at all.", llm=SameTurnLLM())
+
+    assert session.record.facts == []
+
+
+def test_only_the_question_actually_asked_this_turn_is_marked_as_spoken():
+    session = create_session("s1", PROTOCOL)
+    llm = FakeLLM(
+        [
+            tool_call_message([{"name": "get_next_intake_question", "args": {}, "id": "a"}]),
+            tool_call_message([{"name": "get_next_intake_question", "args": {}, "id": "b"}]),
+            final_message("Have you had any wheezing?"),
+        ]
+    )
+
+    run_agent_turn(session, "hello", llm=llm)
+
+    assert len(session.question_events) == 2
+    assert session.question_events[0].asked_in_turn is None
+    assert session.question_events[1].asked_in_turn == 1
+
+
+def test_a_superseded_turn_never_marks_its_question_as_spoken():
+    session = create_session("s1", PROTOCOL)
+
+    class SupersededMidTurnLLM:
+        def __init__(self):
+            self.n = 0
+
+        def invoke(self, messages):
+            self.n += 1
+            if self.n == 1:
+                return tool_call_message([{"name": "get_next_intake_question", "args": {}}])
+            session.turn_generation += 1  # the patient interrupted while this turn was in flight
+            return final_message("Have you had any fever?")
+
+    result = run_agent_turn(session, "hello", llm=SupersededMidTurnLLM(), turn_generation=session.turn_generation)
+
+    assert result["superseded"] is True
+    assert len(session.question_events) == 1
+    assert session.question_events[0].asked_in_turn is None
+
+
+def test_opening_turn_marks_its_question_as_spoken():
+    session = create_session("s1", PROTOCOL)
+    llm = FakeLLM(
+        [
+            tool_call_message([{"name": "get_next_intake_question", "args": {}}]),
+            final_message("Hi, I see you're coming in about a cough. When did it start?"),
+        ]
+    )
+
+    run_opening_turn(session, "persistent cough", llm=llm)
+
+    assert session.question_events[0].asked_in_turn == 0
+
+
+class _FakeVerifier:
+    def __init__(self, verdict):
+        self.verdict = verdict
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        return AIMessage(content=self.verdict)
+
+
+def test_a_denial_the_verifier_rejects_is_not_recorded_and_the_field_stays_open():
+    session = create_session("s1", PROTOCOL)
+    llm = _TwoTurnDenialLLM(session)
+    verifier = _FakeVerifier("OTHER")
+
+    run_agent_turn(session, "hello", llm=llm, verifier_llm=verifier)
+    run_agent_turn(session, "No, not at all.", llm=llm, verifier_llm=verifier)
+
+    assert verifier.calls == 1
+    assert session.record.facts == []
+    asked_field = session.question_events[0].field
+    from app.state_engine import get_missing_fields
+
+    assert asked_field in [m.field for m in get_missing_fields(session.record, PROTOCOL)]
+
+
+def test_a_denial_the_verifier_confirms_is_recorded():
+    session = create_session("s1", PROTOCOL)
+    llm = _TwoTurnDenialLLM(session)
+    verifier = _FakeVerifier("NEGATIVE")
+
+    run_agent_turn(session, "hello", llm=llm, verifier_llm=verifier)
+    run_agent_turn(session, "No, not at all.", llm=llm, verifier_llm=verifier)
+
+    assert [f.source.value for f in session.record.facts] == ["asked_and_denied"]

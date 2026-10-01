@@ -18,20 +18,7 @@ from app.protocol.registry import get_protocol
 from app.schemas.intake_record import Source
 from app.state_engine import get_current_facts, get_missing_fields
 
-EVIDENCE_REQUIRED_SOURCES = {Source.PATIENT_REPORTED, Source.ASKED_AND_DENIED, Source.DOCUMENT_SOURCED}
-
-
-def _resolve_placeholders(args: dict, session) -> dict:
-    """Scenario tool-call args may reference state produced earlier in the
-    conversation via a small placeholder syntax, resolved against the live
-    session right before dispatch — e.g. "$LAST_QUESTION_EVENT_ID"."""
-    resolved = {}
-    for key, value in args.items():
-        if value == "$LAST_QUESTION_EVENT_ID":
-            resolved[key] = session.question_events[-1].id if session.question_events else None
-        else:
-            resolved[key] = value
-    return resolved
+EVIDENCE_REQUIRED_SOURCES = {Source.PATIENT_REPORTED, Source.ASKED_AND_DENIED, Source.UNCERTAIN, Source.DOCUMENT_SOURCED}
 
 
 class ScriptedTurnLLM:
@@ -47,7 +34,7 @@ class ScriptedTurnLLM:
         if not self.dispatched and self.turn.tool_calls:
             self.dispatched = True
             calls = [
-                {"name": c["name"], "args": _resolve_placeholders(c["args"], self.session), "id": f"call-{i}"}
+                {"name": c["name"], "args": c["args"], "id": f"call-{i}"}
                 for i, c in enumerate(self.turn.tool_calls)
             ]
             return AIMessage(content="", tool_calls=calls)
@@ -91,6 +78,10 @@ def run_scenario(scenario: EvalScenario) -> ScenarioResult:
     for f in scenario.expectations.fields_should_not_be_denied:
         fact = current.get(f)
         checks.append(ScenarioCheck(f"not-falsely-denied:{f}", fact is None or fact.source != Source.ASKED_AND_DENIED))
+
+    for f in scenario.expectations.fields_should_be_uncertain:
+        fact = current.get(f)
+        checks.append(ScenarioCheck(f"uncertain:{f}", fact is not None and fact.source == Source.UNCERTAIN, fact.value if fact else None))
 
     for f in scenario.expectations.fields_should_remain_missing:
         still_missing = any(m.field == f for m in get_missing_fields(session.record, protocol))

@@ -37,6 +37,8 @@ def _describe_fact(label: str, fact: Fact) -> str:
         return f"Patient reports {label.lower()}: {fact.value}."
     if fact.source == Source.ASKED_AND_DENIED:
         return f"Patient denies {label.lower()}."
+    if fact.source == Source.UNCERTAIN:
+        return f"Patient is unsure about {label.lower()}."
     if fact.source == Source.DOCUMENT_SOURCED:
         return f"Chart notes: {fact.value}."
     if fact.source == Source.INFERRED:

@@ -105,6 +105,8 @@ class QuestionEventRow(Base):
     field: Mapped[str] = mapped_column(String)
     question_text: Mapped[str] = mapped_column(Text)
     timestamp: Mapped[str] = mapped_column(String)
+    asked_in_turn: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    spoken_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class DocumentRow(Base):
@@ -193,7 +195,15 @@ async def save_session(session: SessionState) -> None:
             for e in session.safety_log
         )
         db.add_all(
-            QuestionEventRow(id=q.id, session_id=session.session_id, field=q.field, question_text=q.question_text, timestamp=q.timestamp)
+            QuestionEventRow(
+                id=q.id,
+                session_id=session.session_id,
+                field=q.field,
+                question_text=q.question_text,
+                timestamp=q.timestamp,
+                asked_in_turn=q.asked_in_turn,
+                spoken_text=q.spoken_text,
+            )
             for q in session.question_events
         )
         db.add_all(
@@ -272,7 +282,17 @@ async def load_session(session_id: str) -> Optional[SessionState]:
         session_id=session_id,
         record=record,
         protocol=protocol,
-        question_events=[QuestionEvent(id=q.id, field=q.field, question_text=q.question_text, timestamp=q.timestamp) for q in questions],
+        question_events=[
+            QuestionEvent(
+                id=q.id,
+                field=q.field,
+                question_text=q.question_text,
+                timestamp=q.timestamp,
+                asked_in_turn=q.asked_in_turn,
+                spoken_text=q.spoken_text,
+            )
+            for q in questions
+        ],
         transcript=[TranscriptTurn(id=t.id, speaker=t.speaker, text=t.text, timestamp=t.timestamp) for t in turns],
         safety_log=[
             SafetyEvaluation(id=e.id, fact_id=e.fact_id, triggered=e.triggered, rule_id=e.rule_id, action=e.action, timestamp=e.timestamp)

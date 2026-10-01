@@ -11,6 +11,7 @@ from typing import Callable, Optional
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import ValidationError
 
+from app.agent.answer_verifier import AnswerVerificationError, verify_answer
 from app.agent.question_prioritizer import rank_next_field
 from app.agent.session import AssistanceRequest, SessionState
 from app.documents.document_store import retrieve_from_documents
@@ -28,14 +29,21 @@ from app.schemas.tool_schemas import (
     UpdateIntakeRecordArgs,
 )
 from app.state_engine import (
+    SPOKEN_QUESTION_SOURCES,
     ProvenanceViolationError,
     apply_fact,
+    evidence_follows_question,
+    find_asked_event,
     get_current_facts,
     get_missing_fields,
+    patient_reply_after,
     record_correction,
 )
+from app.logging_config import get_logger
 
-EVIDENCE_REQUIRED_SOURCES = {Source.PATIENT_REPORTED, Source.ASKED_AND_DENIED, Source.DOCUMENT_SOURCED}
+logger = get_logger(__name__)
+
+EVIDENCE_REQUIRED_SOURCES = {Source.PATIENT_REPORTED, Source.ASKED_AND_DENIED, Source.UNCERTAIN, Source.DOCUMENT_SOURCED}
 
 
 @dataclass
@@ -62,7 +70,21 @@ def _safety_payload(result: SafetyResult) -> Optional[dict]:
 ToolHandler = Callable[[dict], ToolResult]
 
 
-def create_tool_handlers(session: SessionState, llm: Optional[BaseChatModel] = None) -> dict[str, ToolHandler]:
+# What an independent reading of the patient's reply must say for each label
+# the main model can choose. See answer_verifier.py.
+_EXPECTED_VERDICT = {Source.ASKED_AND_DENIED: "negative", Source.UNCERTAIN: "unsure"}
+_VERDICT_MEANING = {
+    "negative": 'a clear "no" (record it as asked_and_denied)',
+    "unsure": 'an "I don\'t know" (record it as uncertain)',
+    "other": 'neither a clear "no" nor an "I don\'t know" — for example a "yes", details, or an unclear answer (record what they actually said as patient_reported, or ask again)',
+}
+
+
+def create_tool_handlers(
+    session: SessionState,
+    llm: Optional[BaseChatModel] = None,
+    verifier_llm: Optional[BaseChatModel] = None,
+) -> dict[str, ToolHandler]:
     def update_intake_record(raw_args: dict) -> ToolResult:
         try:
             args = UpdateIntakeRecordArgs(**raw_args)
@@ -85,6 +107,57 @@ def create_tool_handlers(session: SessionState, llm: Optional[BaseChatModel] = N
                     f"to raise it after this conversation or with their clinician — do not record it here."
                 )
 
+        # A denial ("no") or an "I don't know" is only valid in answer to a
+        # question the agent really spoke, so the server resolves that
+        # question itself instead of trusting an id from the model (see
+        # find_asked_event). Anything the patient volunteers unprompted is
+        # recorded as patient_reported and never goes through this path.
+        question_event_id = None
+        if args.source in SPOKEN_QUESTION_SOURCES:
+            last_patient_turn = max(
+                (i for i, t in enumerate(session.transcript) if t.speaker == "patient"), default=-1
+            )
+            event = find_asked_event(session.question_events, args.field, before_turn=last_patient_turn)
+            if event is None:
+                return _fail(
+                    f'Cannot record "{args.field}" as {args.source.value}: no question about it has been '
+                    f"asked to the patient yet. Ask it first (get_next_intake_question), or if the patient "
+                    f"volunteered this themselves, record it as patient_reported."
+                )
+            if not evidence_follows_question(session.transcript, event, args.evidence or ""):
+                return _fail(
+                    f'Cannot record "{args.field}" as {args.source.value}: the evidence quote was not found '
+                    f"in what the patient said after being asked. Quote their actual words verbatim."
+                )
+            question_event_id = event.id
+
+            # Meaning check, by a separate model: the quote is real, but does the
+            # reply actually say what the main model labelled it? Skipped only
+            # when no verifier is configured (tests / no API key). If one is
+            # configured and fails, the save is refused (fail closed).
+            if verifier_llm is not None:
+                field_label = next((f.label for f in session.protocol.fields if f.field == args.field), args.field) if session.protocol else args.field
+                try:
+                    verdict = verify_answer(
+                        topic=field_label,
+                        question=event.spoken_text or event.question_text,
+                        patient_reply=patient_reply_after(session.transcript, event),
+                        llm=verifier_llm,
+                    )
+                except AnswerVerificationError as e:
+                    logger.warning("answer verification unavailable, refusing the save", extra={"session_id": session.session_id, "field": args.field, "error": str(e)})
+                    return _fail(
+                        f'Could not verify the patient\'s answer for "{args.field}", so it was not recorded. '
+                        f"Ask the patient again and confirm what they meant."
+                    )
+                expected = _EXPECTED_VERDICT[args.source]
+                if verdict != expected:
+                    logger.info("answer verification mismatch", extra={"session_id": session.session_id, "field": args.field, "claimed": args.source.value, "verdict": verdict})
+                    return _fail(
+                        f'Cannot record "{args.field}" as {args.source.value}: an independent reading of the '
+                        f"patient's reply says it is {_VERDICT_MEANING[verdict]}."
+                    )
+
         try:
             session.record = apply_fact(
                 session.record,
@@ -94,7 +167,7 @@ def create_tool_handlers(session: SessionState, llm: Optional[BaseChatModel] = N
                 args.evidence,
                 args.confidence,
                 session.question_events,
-                question_event_id=args.question_event_id,
+                question_event_id=question_event_id,
             )
         except ProvenanceViolationError as e:
             return _fail(str(e))
@@ -200,7 +273,6 @@ def create_tool_handlers(session: SessionState, llm: Optional[BaseChatModel] = N
                 "suggested": {
                     "field": next_field.field,
                     "label": next_field.label,
-                    "question_event_id": question_event.id,
                     "guidance": guidance_text,
                 },
                 "done": False,

@@ -11,6 +11,14 @@ def _is_reported(fact: Fact | None) -> bool:
     return fact is not None and fact.source != Source.NOT_ASKED
 
 
+def _is_asserted(fact: Fact | None) -> bool:
+    """Reported AND actually a claim about the patient. An 'unsure' answer is
+    still listed in the QuestionnaireResponse with its provenance, but must
+    never become a MedicationStatement or AllergyIntolerance — those assert
+    something about the patient, and 'patient doesn't recall' asserts nothing."""
+    return _is_reported(fact) and fact.source != Source.UNCERTAIN
+
+
 def generate_fhir_export(record: IntakeRecord, protocol: ProtocolConfig) -> dict:
     current = get_current_facts(record)
     patient_ref = {"reference": f"Patient/{record.session_id}"}
@@ -46,7 +54,7 @@ def generate_fhir_export(record: IntakeRecord, protocol: ProtocolConfig) -> dict
         if pf.category != "medications":
             continue
         fact = current.get(pf.field)
-        if not _is_reported(fact):
+        if not _is_asserted(fact):
             continue
         medication_statements.append(
             {
@@ -61,7 +69,7 @@ def generate_fhir_export(record: IntakeRecord, protocol: ProtocolConfig) -> dict
     allergy_fact = current.get("medication_allergies")
     allergy_reaction_fact = current.get("allergy_reaction")
     allergy_intolerances = []
-    if _is_reported(allergy_fact):
+    if _is_asserted(allergy_fact):
         allergy: dict = {
             "resourceType": "AllergyIntolerance",
             "clinicalStatus": {"text": "denied" if allergy_fact.source == Source.ASKED_AND_DENIED else "active"},

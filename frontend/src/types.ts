@@ -2,7 +2,7 @@
  * There's no shared-schema package across languages here — Pydantic and TS
  * can't share types directly — so these are kept in sync by hand. */
 
-export type Source = "patient_reported" | "asked_and_denied" | "document_sourced" | "inferred" | "not_asked";
+export type Source = "patient_reported" | "asked_and_denied" | "uncertain" | "document_sourced" | "inferred" | "not_asked";
 
 export interface Fact {
   id: string;

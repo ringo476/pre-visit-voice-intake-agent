@@ -22,6 +22,8 @@ class SeedDocument:
 class ScenarioExpectations:
     # Fields that must never end up asked_and_denied by the end.
     fields_should_not_be_denied: list[str] = field(default_factory=list)
+    # Fields that must end up recorded as uncertain (the patient said they don't know).
+    fields_should_be_uncertain: list[str] = field(default_factory=list)
     # Fields that must be covered (any source other than not_asked) by the end.
     fields_should_be_covered: list[str] = field(default_factory=list)
     # Fields expected to still be missing/open at the end.

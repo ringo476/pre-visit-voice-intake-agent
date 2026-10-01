@@ -57,7 +57,7 @@ async def test_round_trip_preserves_facts_transcript_and_protocol(temp_db):
 @pytest.mark.asyncio
 async def test_round_trip_preserves_safety_log_questions_documents_and_assistance(temp_db):
     session = create_session(str(uuid.uuid4()), protocol=get_protocol("respiratory-intake"))
-    session.question_events.append(QuestionEvent(id="q1", field="fever", question_text="Any fever?", timestamp="t"))
+    session.question_events.append(QuestionEvent(id="q1", field="fever", question_text="Any fever?", timestamp="t", asked_in_turn=3, spoken_text="Have you had a fever?"))
     session.safety_log.append(SafetyEvaluation(id="s1", fact_id="f1", triggered=True, rule_id="severe_breathing_difficulty", action="emergency_escalation", timestamp="t"))
     session.documents.append(UploadedDocument(id="d1", filename="rx.pdf", mime_type="application/pdf", text="albuterol", uploaded_at="t"))
     session.assistance_requests.append(AssistanceRequest(id="a1", reason="patient asked for a human", timestamp="t"))
@@ -67,6 +67,8 @@ async def test_round_trip_preserves_safety_log_questions_documents_and_assistanc
     restored = await persistence.load_session(session.session_id)
 
     assert restored.question_events[0].field == "fever"
+    assert restored.question_events[0].asked_in_turn == 3
+    assert restored.question_events[0].spoken_text == "Have you had a fever?"
     assert restored.safety_log[0].triggered is True
     assert restored.documents[0].filename == "rx.pdf"
     assert restored.assistance_requests[0].reason == "patient asked for a human"

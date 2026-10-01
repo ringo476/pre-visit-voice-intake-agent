@@ -31,7 +31,7 @@ straightforward_scenario = EvalScenario(
         ScenarioTurn(
             patient_utterance="No, no fever.",
             tool_calls=[
-                {"name": "update_intake_record", "args": {"field": "fever", "value": "false", "source": "asked_and_denied", "evidence": "No, no fever", "confidence": 0.92, "question_event_id": "$LAST_QUESTION_EVENT_ID"}},
+                {"name": "update_intake_record", "args": {"field": "fever", "value": "false", "source": "asked_and_denied", "evidence": "No, no fever", "confidence": 0.92}},
             ],
             final_text="Understood, no fever noted.",
         ),

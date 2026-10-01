@@ -6,6 +6,7 @@ import { getCurrentFactsMap } from "../lib/deriveCurrentFacts";
 const SOURCE_LABEL: Record<string, string> = {
   patient_reported: "reported",
   asked_and_denied: "denied",
+  uncertain: "unsure",
   document_sourced: "from document",
   inferred: "inferred",
   not_asked: "not asked",

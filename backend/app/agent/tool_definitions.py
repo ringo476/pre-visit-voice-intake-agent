@@ -10,7 +10,7 @@ audit at a glance."""
 import copy
 from typing import Optional
 
-SOURCE_ENUM = ["patient_reported", "asked_and_denied", "document_sourced", "inferred", "not_asked"]
+SOURCE_ENUM = ["patient_reported", "asked_and_denied", "uncertain", "document_sourced", "inferred", "not_asked"]
 
 TOOL_DEFINITIONS: list[dict] = [
     {
@@ -27,17 +27,13 @@ TOOL_DEFINITIONS: list[dict] = [
                 "source": {
                     "type": "string",
                     "enum": SOURCE_ENUM,
-                    "description": "Where this fact came from. Use asked_and_denied only together with the question_event_id from get_next_intake_question for that same field.",
+                    "description": "Where this fact came from. Use asked_and_denied only when the patient said no in direct answer to a question you asked about this exact field. Use uncertain only when, in direct answer to that question, the patient said they do not know or do not remember. Anything they volunteer on their own is patient_reported.",
                 },
                 "evidence": {
                     "type": "string",
                     "description": "The patient's own words backing this fact, verbatim. Required unless source is not_asked or inferred.",
                 },
                 "confidence": {"type": "number", "description": "0 to 1 confidence in this extraction."},
-                "question_event_id": {
-                    "type": "string",
-                    "description": "Required when source is asked_and_denied. Comes from a prior get_next_intake_question call.",
-                },
             },
             "required": ["field", "value", "source", "confidence"],
         },
@@ -76,7 +72,7 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "get_next_intake_question",
-        "description": "Ask what the protocol still needs covered. Returns the next open field and a question_event_id to use if the patient denies it.",
+        "description": "Ask what the protocol still needs covered. Returns the next open field to ask the patient about. Asking it is what later lets a denial of that field be recorded.",
         "parameters": {"type": "object", "properties": {}},
     },
     {
