@@ -12,7 +12,14 @@ class _ByKeyword:
     has realistic right and wrong answers to score."""
 
     def invoke(self, messages):
-        reply = messages[0].content.split("What the patient said afterwards:")[1].split("\n")[0].lower()
+        prompt = messages[0].content
+        reply = prompt.split("What the patient said afterwards:")[1].split("\n")[0].lower()
+        topic = prompt.split("Topic:")[1].split("\n")[0].lower()
+        assistant = prompt.split("What the assistant said:")[1].split("\n")[0].lower()
+        if "allerg" in assistant and "allerg" not in topic:
+            return AIMessage(content="OTHER")  # the assistant asked about something else
+        if "normal" in reply:
+            return AIMessage(content="NEGATIVE")
         if any(w in reply for w in ["remember", "not sure", "no idea", "don't know"]):
             return AIMessage(content="UNSURE")
         if reply.strip(' ".').startswith(("no", "nope", "not at all", "i haven't")):

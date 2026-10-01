@@ -83,6 +83,7 @@ def test_get_next_intake_question_falls_back_when_ranking_llm_hallucinates():
 
 def test_update_intake_record_records_patient_reported_fact_no_safety_trigger():
     session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "It started last Monday."))
     handlers = create_tool_handlers(session)
 
     result = handlers["update_intake_record"](
@@ -377,6 +378,7 @@ def test_verifier_sees_the_topic_the_spoken_question_and_the_patients_reply():
 
 def test_update_intake_record_surfaces_safety_trigger():
     session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "I honestly can't breathe properly right now."))
     handlers = create_tool_handlers(session)
 
     result = handlers["update_intake_record"](
@@ -395,6 +397,7 @@ def test_update_intake_record_surfaces_safety_trigger():
 
 def test_record_patient_correction_supersedes_original():
     session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "It started last Monday. Actually, two weeks ago."))
     handlers = create_tool_handlers(session)
 
     first = handlers["update_intake_record"](
@@ -416,6 +419,7 @@ def test_record_patient_correction_works_without_the_model_ever_seeing_a_fact_id
     visible to the model in a later turn (each turn's message list is
     rebuilt from session.transcript alone, not past tool-call history)."""
     session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "It started last Monday. Actually, two weeks ago."))
     handlers = create_tool_handlers(session)
 
     handlers["update_intake_record"](
@@ -449,6 +453,7 @@ def test_check_safety_protocol_triggers_on_statement():
 
 def test_check_safety_protocol_scans_existing_facts_when_no_statement():
     session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "It's a crushing pressure in my chest."))
     handlers = create_tool_handlers(session)
     handlers["update_intake_record"](
         {"field": "chest_discomfort", "value": "crushing chest pain", "source": "patient_reported", "evidence": "It's a crushing pressure in my chest", "confidence": 0.9}
@@ -470,6 +475,7 @@ def test_get_next_intake_question_suggests_field_and_logs_question_event():
 
 def test_get_next_intake_question_reports_done_once_complete():
     session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "n/a"))
     handlers = create_tool_handlers(session)
 
     for _ in range(len(PROTOCOL.fields) + 5):
@@ -539,3 +545,198 @@ def test_request_human_assistance_logs_without_touching_record():
     assert result.ok is True
     assert len(session.assistance_requests) == 1
     assert len(session.record.facts) == 0
+
+
+# ---------------------------------------------------------------------------
+# Every label is checked against the origin it claims
+# ---------------------------------------------------------------------------
+
+def _patient_reported(field: str, value: str, evidence: str) -> dict:
+    return {"field": field, "value": value, "source": "patient_reported", "evidence": evidence, "confidence": 0.9}
+
+
+def test_patient_reported_rejected_when_the_quote_is_not_something_the_patient_said():
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "I have had a cough for a while."))
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](_patient_reported("medication_allergies", "none", "I have no allergies"))
+
+    assert result.ok is False
+    assert "not found in anything the patient has said" in result.error
+    assert session.record.facts == []
+
+
+def test_patient_reported_accepted_when_the_quote_is_in_the_patients_words():
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "I'm allergic to penicillin, it gives me hives."))
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](_patient_reported("medication_allergies", "penicillin", "allergic to penicillin"))
+
+    assert result.ok is True
+
+
+def test_a_quote_the_agent_said_does_not_count_as_something_the_patient_said():
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "agent", "Do you have any penicillin allergy?"))
+    session.transcript.append(_turn(1, "patient", "Hmm."))
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](_patient_reported("medication_allergies", "penicillin", "penicillin allergy"))
+
+    assert result.ok is False
+
+
+def test_a_no_recorded_as_patient_reported_with_the_wrong_meaning_is_blocked_by_the_verifier():
+    """The hole: the patient said YES, the model sends value 'no' but labels it
+    patient_reported to avoid the denial checks. The quote is real; the meaning
+    is not 'no'."""
+    verifier = _FakeVerifier("OTHER")
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "agent", "Have you had any fever?"))
+    session.transcript.append(_turn(1, "patient", "Yes, I felt feverish on Tuesday."))
+    handlers = create_tool_handlers(session, verifier_llm=verifier)
+
+    result = handlers["update_intake_record"](_patient_reported("fever", "no", "Yes, I felt feverish on Tuesday"))
+
+    assert result.ok is False
+    assert "independent reading" in result.error
+    assert session.record.facts == []
+
+
+def test_a_genuine_no_recorded_as_patient_reported_passes_the_verifier():
+    verifier = _FakeVerifier("NEGATIVE")
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "No, I don't smoke."))
+    handlers = create_tool_handlers(session, verifier_llm=verifier)
+
+    result = handlers["update_intake_record"](_patient_reported("smoking_history", "no", "No, I don't smoke"))
+
+    assert result.ok is True
+    assert len(verifier.prompts) == 1
+    assert "without being asked" in verifier.prompts[0]  # nothing was asked, the patient volunteered it
+
+
+def test_an_unsure_reply_recorded_as_a_no_is_pointed_to_uncertain():
+    verifier = _FakeVerifier("UNSURE")
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "I'm not sure whether I smoked back then."))
+    handlers = create_tool_handlers(session, verifier_llm=verifier)
+
+    result = handlers["update_intake_record"](_patient_reported("smoking_history", "no", "I'm not sure whether I smoked"))
+
+    assert result.ok is False
+    assert "record it as uncertain" in result.error
+
+
+def test_the_verifier_is_not_called_for_a_patient_reported_fact_that_is_not_a_no():
+    verifier = _FakeVerifier("NEGATIVE")
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "It started about two weeks ago."))
+    handlers = create_tool_handlers(session, verifier_llm=verifier)
+
+    result = handlers["update_intake_record"](_patient_reported("onset", "two weeks ago", "started about two weeks ago"))
+
+    assert result.ok is True
+    assert verifier.prompts == []
+
+
+def test_document_sourced_rejected_when_no_document_was_uploaded():
+    session = create_session("s1", PROTOCOL)
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](
+        {"field": "medication_allergies", "value": "none", "source": "document_sourced", "evidence": "Allergies: none", "confidence": 0.9}
+    )
+
+    assert result.ok is False
+    assert "no document has been uploaded" in result.error
+
+
+def test_document_sourced_rejected_when_the_quote_is_not_in_any_uploaded_document():
+    session = create_session("s1", PROTOCOL)
+    session.documents.append(UploadedDocument(id="d1", filename="rx.pdf", mime_type="application/pdf", text="Albuterol inhaler 90mcg", uploaded_at="t"))
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](
+        {"field": "medication_allergies", "value": "none", "source": "document_sourced", "evidence": "Allergies: none", "confidence": 0.9}
+    )
+
+    assert result.ok is False
+    assert "not found in the text of any uploaded document" in result.error
+
+
+def test_document_sourced_accepted_when_the_quote_is_in_an_uploaded_document():
+    session = create_session("s1", PROTOCOL)
+    session.documents.append(UploadedDocument(id="d1", filename="rx.pdf", mime_type="application/pdf", text="Albuterol inhaler 90mcg, 2 puffs as needed", uploaded_at="t"))
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](
+        {"field": "medications_tried", "value": "albuterol", "source": "document_sourced", "evidence": "Albuterol inhaler 90mcg", "confidence": 0.9}
+    )
+
+    assert result.ok is True
+
+
+def test_inferred_is_rejected_for_anything_but_the_booking_reason():
+    session = create_session("s1", PROTOCOL, appointment_reason_text="a persistent cough")
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](
+        {"field": "medication_allergies", "value": "no known allergies", "source": "inferred", "confidence": 0.5}
+    )
+
+    assert result.ok is False
+    assert "only for the visit reason" in result.error
+
+
+def test_inferred_chief_complaint_needs_a_booking_reason_to_exist():
+    session = create_session("s1", PROTOCOL)  # no booking reason on record
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](
+        {"field": "chief_complaint", "value": "cough", "source": "inferred", "confidence": 0.5}
+    )
+
+    assert result.ok is False
+
+
+def test_inferred_chief_complaint_is_accepted_when_it_comes_from_the_booking():
+    session = create_session("s1", PROTOCOL, appointment_reason_text="a persistent cough")
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](
+        {"field": "chief_complaint", "value": "persistent cough", "source": "inferred", "confidence": 0.9}
+    )
+
+    assert result.ok is True
+    assert session.record.facts[-1].source.value == "inferred"
+
+
+def test_a_correction_must_quote_something_the_patient_really_said():
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "It started last Monday."))
+    handlers = create_tool_handlers(session)
+    handlers["update_intake_record"](_patient_reported("onset", "10 days ago", "It started last Monday"))
+
+    result = handlers["record_patient_correction"](
+        {"field": "onset", "new_value": "2 weeks ago", "evidence": "actually it was two weeks ago", "confidence": 0.9}
+    )
+
+    assert result.ok is False
+    assert "not found in anything the patient has said" in result.error
+
+
+def test_a_correction_to_a_no_goes_through_the_verifier_too():
+    verifier = _FakeVerifier("OTHER")
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "I had a fever. Actually, hold on, yes I definitely had one."))
+    handlers = create_tool_handlers(session, verifier_llm=verifier)
+    handlers["update_intake_record"](_patient_reported("fever", "yes", "I had a fever"))
+
+    result = handlers["record_patient_correction"](
+        {"field": "fever", "new_value": "no", "evidence": "yes I definitely had one", "confidence": 0.9}
+    )
+
+    assert result.ok is False

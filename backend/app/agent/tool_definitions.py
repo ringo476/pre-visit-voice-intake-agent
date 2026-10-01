@@ -27,7 +27,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "source": {
                     "type": "string",
                     "enum": SOURCE_ENUM,
-                    "description": "Where this fact came from. Use asked_and_denied only when the patient said no in direct answer to a question you asked about this exact field. Use uncertain only when, in direct answer to that question, the patient said they do not know or do not remember. Anything they volunteer on their own is patient_reported.",
+                    "description": "Where this fact came from. Use asked_and_denied only when the patient said no in direct answer to a question you asked about this exact field. Use uncertain only when, in direct answer to that question, the patient said they do not know or do not remember. Use patient_reported for anything the patient said on their own: your quote must be their exact words. Use document_sourced only for text from a document they uploaded (quote it exactly). Use inferred only for the visit reason taken from the booking (chief_complaint).",
                 },
                 "evidence": {
                     "type": "string",

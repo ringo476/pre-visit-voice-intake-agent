@@ -106,18 +106,49 @@ def patient_reply_after(transcript: list[TranscriptTurn], event: QuestionEvent) 
     return " ".join(t.text for t in transcript[event.asked_in_turn + 1 :] if t.speaker == "patient")
 
 
+def evidence_in_text(text: str, evidence: str) -> bool:
+    """True if `evidence` appears in `text` as whole words, ignoring case and
+    punctuation. Padding both sides means a bare "no" cannot count as found
+    inside "I know"."""
+    needle = _normalize_for_match(evidence)
+    if not needle:
+        return False
+    return f" {needle} " in f" {_normalize_for_match(text)} "
+
+
+def evidence_in_patient_speech(transcript: list[TranscriptTurn], evidence: str) -> bool:
+    """True if the quote is something the PATIENT said at some point in the
+    conversation. Used for facts the patient volunteered, which have no
+    particular question to anchor to."""
+    return evidence_in_text(" ".join(t.text for t in transcript if t.speaker == "patient"), evidence)
+
+
+def patient_turns_containing(transcript: list[TranscriptTurn], evidence: str) -> str:
+    """The patient message(s) the quote came from, so a meaning check can read
+    the whole sentence the quote was taken from rather than the quote alone.
+    Falls back to the patient's most recent message if no single message holds
+    the whole quote."""
+    matching = [t.text for t in transcript if t.speaker == "patient" and evidence_in_text(t.text, evidence)]
+    if matching:
+        return " ".join(matching)
+    patient_turns = [t.text for t in transcript if t.speaker == "patient"]
+    return patient_turns[-1] if patient_turns else ""
+
+
+def looks_like_denial(value: str) -> bool:
+    """Public wrapper: does this recorded value read as a "no"? Empty values
+    do not count."""
+    return bool(value.strip()) and _looks_like_denial(value)
+
+
 def evidence_follows_question(transcript: list[TranscriptTurn], event: QuestionEvent, evidence: str) -> bool:
     """True if `evidence` is a quote from something the patient said AFTER
     the agent spoke `event`'s question. Punctuation and case are ignored,
     since the model's quote and the STT transcript routinely differ in
     those alone."""
-    needle = _normalize_for_match(evidence)
-    if not needle or event.asked_in_turn is None:
+    if event.asked_in_turn is None:
         return False
-    patient_text_after = _normalize_for_match(patient_reply_after(transcript, event))
-    # Pad both sides so the quote must match whole words: a bare "no" must not
-    # count as found inside "I know".
-    return f" {needle} " in f" {patient_text_after} "
+    return evidence_in_text(patient_reply_after(transcript, event), evidence)
 
 
 def record_correction(
@@ -141,15 +172,12 @@ def record_correction(
             f'Cannot correct "{field}" — nothing has been recorded for it yet; use update_intake_record instead'
         )
 
-    # A correction is always the patient's own new statement. A prior that was
-    # never asked, "unsure", or a denial must not leak its source onto the new
-    # value: "I did have a fever after all" filed as asked_and_denied would
-    # render in the brief as "Patient denies fever".
-    new_source = (
-        Source.PATIENT_REPORTED
-        if prior.source in (Source.NOT_ASKED, Source.UNCERTAIN, Source.ASKED_AND_DENIED)
-        else prior.source
-    )
+    # A correction is always the patient's own new statement, so it is always
+    # patient_reported, whatever the prior fact was. Letting the prior source
+    # leak through filed "I did have a fever after all" as asked_and_denied
+    # (rendering "Patient denies fever") and kept a document or inferred label
+    # on a value the patient had just contradicted in their own words.
+    new_source = Source.PATIENT_REPORTED
 
     timestamp = _now()
     corrected = Fact(

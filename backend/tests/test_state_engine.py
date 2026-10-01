@@ -7,7 +7,11 @@ from app.state_engine import (
     apply_fact,
     create_empty_record,
     evidence_follows_question,
+    evidence_in_patient_speech,
+    evidence_in_text,
     find_asked_event,
+    looks_like_denial,
+    patient_turns_containing,
     get_current_fact,
     get_missing_fields,
     is_record_complete,
@@ -232,3 +236,39 @@ def test_correcting_a_patient_reported_fact_keeps_its_source_and_proof():
     record = apply_fact(create_empty_record("s1", "p"), "onset", "10 days ago", Source.PATIENT_REPORTED, "last Monday", 0.9, [])
     record = record_correction(record, "onset", "2 weeks ago", "two weeks ago", 0.9)
     assert get_current_fact(record, "onset").source == Source.PATIENT_REPORTED
+
+
+def test_evidence_in_text_matches_whole_words_ignoring_case_and_punctuation():
+    assert evidence_in_text("I have a COUGH, and a fever!", "a cough and a fever") is True  # case and the comma are ignored
+    assert evidence_in_text("I have a COUGH, and a fever!", "cough and fever") is False  # a missing word is not a match
+    assert evidence_in_text("I know it started Monday", "no") is False
+    assert evidence_in_text("anything", "   ") is False
+
+
+def test_evidence_in_patient_speech_ignores_what_the_agent_said():
+    transcript = _turns(("agent", "Any penicillin allergy?"), ("patient", "Not that I know of."))
+    assert evidence_in_patient_speech(transcript, "Not that I know of") is True
+    assert evidence_in_patient_speech(transcript, "penicillin allergy") is False
+
+
+def test_patient_turns_containing_returns_the_sentence_the_quote_came_from():
+    transcript = _turns(("patient", "Hello."), ("agent", "Hi."), ("patient", "No, I don't smoke. I have asthma."))
+    assert patient_turns_containing(transcript, "I don't smoke") == "No, I don't smoke. I have asthma."
+
+
+def test_patient_turns_containing_falls_back_to_the_latest_patient_message():
+    transcript = _turns(("patient", "first"), ("patient", "second"))
+    assert patient_turns_containing(transcript, "something not there") == "second"
+
+
+def test_looks_like_denial_ignores_empty_values():
+    assert looks_like_denial("no") is True
+    assert looks_like_denial("None of them") is True
+    assert looks_like_denial("   ") is False
+    assert looks_like_denial("two weeks ago") is False
+
+
+def test_any_correction_becomes_patient_reported_even_from_a_document_value():
+    record = apply_fact(create_empty_record("s1", "p"), "medications_tried", "albuterol", Source.DOCUMENT_SOURCED, "Albuterol 90mcg", 0.9, [])
+    record = record_correction(record, "medications_tried", "I stopped it last year", "I stopped it last year", 0.9)
+    assert get_current_fact(record, "medications_tried").source == Source.PATIENT_REPORTED

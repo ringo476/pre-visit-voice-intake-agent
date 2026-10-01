@@ -33,10 +33,14 @@ from app.state_engine import (
     ProvenanceViolationError,
     apply_fact,
     evidence_follows_question,
+    evidence_in_patient_speech,
+    evidence_in_text,
     find_asked_event,
     get_current_facts,
     get_missing_fields,
+    looks_like_denial,
     patient_reply_after,
+    patient_turns_containing,
     record_correction,
 )
 from app.logging_config import get_logger
@@ -85,6 +89,70 @@ def create_tool_handlers(
     llm: Optional[BaseChatModel] = None,
     verifier_llm: Optional[BaseChatModel] = None,
 ) -> dict[str, ToolHandler]:
+    def _label_for(field: str) -> str:
+        if session.protocol is not None:
+            return next((f.label for f in session.protocol.fields if f.field == field), field)
+        return field
+
+    def _meaning_mismatch(
+        field: str, question: Optional[str], patient_reply: str, expected: str, claimed: str
+    ) -> Optional[ToolResult]:
+        """Asks the separate verifier model what the patient's reply actually
+        was and compares it with what the main model claimed. Returns a failing
+        ToolResult on a mismatch or if the verifier cannot answer (fail
+        closed), or None when the claim holds up. Skipped only when no
+        verifier is configured (offline tests / no API key)."""
+        if verifier_llm is None:
+            return None
+        try:
+            verdict = verify_answer(
+                topic=_label_for(field), question=question, patient_reply=patient_reply, llm=verifier_llm
+            )
+        except AnswerVerificationError as e:
+            logger.warning(
+                "answer verification unavailable, refusing the save",
+                extra={"session_id": session.session_id, "field": field, "error": str(e)},
+            )
+            return _fail(
+                f'Could not verify the patient\'s answer for "{field}", so it was not recorded. '
+                f"Ask the patient again and confirm what they meant."
+            )
+        if verdict != expected:
+            logger.info(
+                "answer verification mismatch",
+                extra={"session_id": session.session_id, "field": field, "claimed": claimed, "verdict": verdict},
+            )
+            return _fail(
+                f'Cannot record "{field}" as {claimed}: an independent reading of the '
+                f"patient's reply says it is {_VERDICT_MEANING[verdict]}."
+            )
+        return None
+
+    def _check_patient_statement(field: str, value: str, evidence: Optional[str], claimed: str) -> Optional[ToolResult]:
+        """Checks for a fact recorded as the patient's own words (a new
+        patient_reported fact or a correction): the quote must really be
+        something the patient said, and a recorded "no" must really be a "no"
+        in the sentence it came from. The meaning check applies only to
+        denial-like values, because a false absence is the clinically
+        dangerous direction and checking every fact would add a model call per
+        fact."""
+        if not evidence_in_patient_speech(session.transcript, evidence or ""):
+            logger.info("quote not found in patient speech", extra={"session_id": session.session_id, "field": field})
+            return _fail(
+                f'Cannot record "{field}" as {claimed}: the evidence quote was not found in anything the '
+                f"patient has said. Quote their actual words verbatim."
+            )
+        if looks_like_denial(value):
+            spoken = find_asked_event(session.question_events, field, before_turn=len(session.transcript))
+            return _meaning_mismatch(
+                field,
+                spoken.spoken_text if spoken else None,
+                patient_turns_containing(session.transcript, evidence or ""),
+                expected="negative",
+                claimed=claimed,
+            )
+        return None
+
     def update_intake_record(raw_args: dict) -> ToolResult:
         try:
             args = UpdateIntakeRecordArgs(**raw_args)
@@ -105,6 +173,31 @@ def create_tool_handlers(
                     f'"{args.field}" is not part of the current intake ({session.protocol.name}). '
                     f"If this is a separate concern, acknowledge it to the patient and let them know "
                     f"to raise it after this conversation or with their clinician — do not record it here."
+                )
+
+        # Labels the model could otherwise assert on its own word. Each one
+        # claims a specific origin, so each is checked against that origin.
+        if args.source == Source.PATIENT_REPORTED:
+            rejected = _check_patient_statement(args.field, args.value, args.evidence, args.source.value)
+            if rejected:
+                return rejected
+        elif args.source == Source.DOCUMENT_SOURCED:
+            if not session.documents:
+                return _fail(
+                    f'Cannot record "{args.field}" as document_sourced: no document has been uploaded in this '
+                    f"conversation. Record only what the patient said, or ask them."
+                )
+            if not any(evidence_in_text(d.text, args.evidence or "") for d in session.documents):
+                return _fail(
+                    f'Cannot record "{args.field}" as document_sourced: the evidence quote was not found in the '
+                    f"text of any uploaded document. Quote the document text exactly (retrieve_uploaded_document)."
+                )
+        elif args.source == Source.INFERRED:
+            if not (args.field == "chief_complaint" and session.appointment_reason_text):
+                return _fail(
+                    f'Cannot record "{args.field}" as inferred. "inferred" is only for the visit reason taken '
+                    f"from the booking (chief_complaint). Record only what the patient said or a document says; "
+                    f"if it has not come up yet, ask."
                 )
 
         # A denial ("no") or an "I don't know" is only valid in answer to a
@@ -132,31 +225,16 @@ def create_tool_handlers(
             question_event_id = event.id
 
             # Meaning check, by a separate model: the quote is real, but does the
-            # reply actually say what the main model labelled it? Skipped only
-            # when no verifier is configured (tests / no API key). If one is
-            # configured and fails, the save is refused (fail closed).
-            if verifier_llm is not None:
-                field_label = next((f.label for f in session.protocol.fields if f.field == args.field), args.field) if session.protocol else args.field
-                try:
-                    verdict = verify_answer(
-                        topic=field_label,
-                        question=event.spoken_text or event.question_text,
-                        patient_reply=patient_reply_after(session.transcript, event),
-                        llm=verifier_llm,
-                    )
-                except AnswerVerificationError as e:
-                    logger.warning("answer verification unavailable, refusing the save", extra={"session_id": session.session_id, "field": args.field, "error": str(e)})
-                    return _fail(
-                        f'Could not verify the patient\'s answer for "{args.field}", so it was not recorded. '
-                        f"Ask the patient again and confirm what they meant."
-                    )
-                expected = _EXPECTED_VERDICT[args.source]
-                if verdict != expected:
-                    logger.info("answer verification mismatch", extra={"session_id": session.session_id, "field": args.field, "claimed": args.source.value, "verdict": verdict})
-                    return _fail(
-                        f'Cannot record "{args.field}" as {args.source.value}: an independent reading of the '
-                        f"patient's reply says it is {_VERDICT_MEANING[verdict]}."
-                    )
+            # reply actually say what the main model labelled it, about this topic?
+            rejected = _meaning_mismatch(
+                args.field,
+                event.spoken_text or event.question_text,
+                patient_reply_after(session.transcript, event),
+                expected=_EXPECTED_VERDICT[args.source],
+                claimed=args.source.value,
+            )
+            if rejected:
+                return rejected
 
         try:
             session.record = apply_fact(
@@ -182,6 +260,10 @@ def create_tool_handlers(
             args = RecordPatientCorrectionArgs(**raw_args)
         except ValidationError as e:
             return _fail(f"Invalid arguments: {e}")
+
+        rejected = _check_patient_statement(args.field, args.new_value, args.evidence, "patient_reported")
+        if rejected:
+            return rejected
 
         try:
             session.record = record_correction(
