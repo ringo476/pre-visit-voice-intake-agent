@@ -290,9 +290,25 @@ def get_current_fact(record: IntakeRecord, field: str) -> Optional[Fact]:
 
 _GENERIC_YES = {"yes", "yeah", "yep", "yup"}
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+# Grammar words and hedges that may be added to an answer without being in the
+# patient's quote. Negations are deliberately not here.
+_FILLER_WORDS = {
+    "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "by", "is", "are", "was", "were",
+    "be", "been", "it", "its", "i", "my", "me", "with", "for", "from", "that", "this", "also", "actually",
+    "just", "very", "really", "about", "around", "roughly", "approximately", "some", "yes",
+}
 
 
-def classify_change(current: Fact, polarity: Polarity, value: str) -> str:
+def _added_words_are_in_quote(old: str, new: str, quote: str) -> bool:
+    """`old`, `new` and `quote` are already lowercased with punctuation removed.
+    True if every word the new answer adds to the old one is either a filler word
+    or appears in the patient's quote. This is what stops a model from keeping
+    the old text and tacking on a detail the patient never said."""
+    added = set(new.split()) - set(old.split()) - _FILLER_WORDS
+    return added <= set(quote.split())
+
+
+def classify_change(current: Fact, polarity: Polarity, value: str, quote: Optional[str] = None) -> str:
     """How a new answer about a field that already has one relates to it.
 
     "same"     - nothing new; recording it again would only add a duplicate.
@@ -313,7 +329,7 @@ def classify_change(current: Fact, polarity: Polarity, value: str) -> str:
     old, new = _normalize_for_match(current.value), _normalize_for_match(value)
     if old == new or new in _GENERIC_YES:
         return "same"
-    if not old or not new or old in _GENERIC_YES:
+    if not old or not new:
         return "update"
     # A number the patient already gave (a temperature, a dose, a duration) may not
     # change or grow on the strength of one statement: 104 becoming 102, 104.5 or
@@ -322,7 +338,11 @@ def classify_change(current: Fact, polarity: Polarity, value: str) -> str:
     old_numbers = sorted(_NUMBER.findall(current.value))
     if old_numbers and old_numbers != sorted(_NUMBER.findall(value)):
         return "conflict"
-    if f" {old} " in f" {new} " or f" {new} " in f" {old} ":
+    if old in _GENERIC_YES or f" {old} " in f" {new} " or f" {new} " in f" {old} ":
+        # Only added detail so far, but the detail has to be the patient's: a word
+        # that is in neither the old answer nor the quote was made up.
+        if quote is not None and not _added_words_are_in_quote(old, new, _normalize_for_match(quote)):
+            return "conflict"
         return "update"
     return "conflict"
 

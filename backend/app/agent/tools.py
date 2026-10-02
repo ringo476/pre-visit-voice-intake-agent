@@ -219,7 +219,7 @@ def create_tool_handlers(
             if current.source == Source.INFERRED:
                 supersedes_current = True  # the booking's guess, replaced by the patient's own words
             else:
-                change = classify_change(current, polarity, value)
+                change = classify_change(current, polarity, value, evidence)
                 if change == "same":
                     return _ok(
                         {

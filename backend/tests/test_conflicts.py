@@ -526,3 +526,83 @@ def test_if_the_patient_talks_over_the_question_the_change_waits():
 
     assert len(session.record.facts) == 1  # a "no fever" in an interruption does not settle it
     assert len([e for e in session.question_events if e.confirms_fact_id]) == 2  # so Ava asked again
+
+
+# --- added words must come from the patient ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "old, new, quote, expected",
+    [
+        # a different day is a plain disagreement
+        ("suffering from fever since Thursday", "suffering from fever since Monday", "I've been suffering from fever since Thursday", "conflict"),
+        # keeps the old text and tacks on a day nobody said
+        ("suffering from fever since Thursday", "suffering from fever since Thursday, actually since Monday", "I've been suffering from fever since Thursday", "conflict"),
+        # the same words, but this time the patient really did say Monday
+        ("suffering from fever since Thursday", "suffering from fever since Thursday, actually since Monday", "It was actually since Monday, I think", "update"),
+        # a genuine detail that is in the quote
+        ("dry cough", "dry cough, worse at night", "it's a dry cough and it gets worse at night", "update"),
+        # a paraphrase whose new words are not in the quote: asks, which is safe
+        ("dry cough", "dry cough, nocturnal worsening", "it's a dry cough and it gets worse at night", "conflict"),
+        # hedge words like "around" and grammar words do not need to be in the quote
+        ("fever since Tuesday", "fever since Tuesday, around 101 at night", "about 101 at night", "update"),
+        # a bare yes followed by a detail the quote does not contain
+        ("yes", "yes, since Monday", "I've had it since Thursday", "conflict"),
+        ("yes", "yes, since Thursday", "I've had it since Thursday", "update"),
+    ],
+)
+def test_words_added_to_an_answer_must_come_from_the_patients_own_quote(old, new, quote, expected):
+    assert classify_change(_fact(Polarity.PRESENT, old), Polarity.PRESENT, new, quote) == expected
+
+
+def _thursday_fever_then_an_allergy_answer():
+    session = create_session("s1", PROTOCOL)
+    _say(session, "agent", "Have you had any fever or chills?")
+    _say(session, "patient", "Yes, I've been suffering from fever since Thursday.")
+    create_tool_handlers(session)["update_intake_record"](
+        _yes("fever", "suffering from fever since Thursday", "I've been suffering from fever since Thursday")
+    )
+    _say(session, "agent", "Thanks. Do you have any allergies to medications?")
+    _say(session, "patient", "Yes, I'm allergic to penicillin, it gives me a rash.")
+    return session
+
+
+@pytest.mark.parametrize(
+    "value, quote",
+    [
+        ("suffering from fever since Monday", "I've been suffering from fever since Thursday"),
+        ("suffering from fever since Thursday, actually since Monday", "I've been suffering from fever since Thursday"),
+        ("suffering from fever since Monday", "I'm allergic to penicillin, it gives me a rash"),
+    ],
+    ids=["a different day", "old text plus a made-up day", "a real quote about something else"],
+)
+def test_a_fever_the_patient_never_changed_is_not_rewritten_by_a_call_that_comes_out_of_nowhere(value, quote):
+    """Ava asked about allergies and the patient answered about allergies. A fever
+    update then appears from the model. The allergy answer is recorded as normal;
+    the fever answer is not touched."""
+    session = _thursday_fever_then_an_allergy_answer()
+    handlers = create_tool_handlers(session, verifier_llm=_Verifier("SUPPORTED"))
+    allergy = {"name": "update_intake_record", "id": "1", "args": _yes(
+        "medication_allergies", "penicillin, gives a rash", "I'm allergic to penicillin, it gives me a rash")}
+    fever = {"name": "update_intake_record", "id": "2", "args": _yes("fever", value, quote)}
+
+    handlers.prepare([allergy, fever])
+    allergy_result = handlers["update_intake_record"](allergy["args"])
+    fever_result = handlers["update_intake_record"](fever["args"])
+
+    assert allergy_result.data["recorded"] is True
+    assert fever_result.data["needs_confirmation"] is True
+    assert get_current_facts(session.record)["fever"].value == "suffering from fever since Thursday"
+
+
+def test_a_detail_the_patient_really_said_still_updates_without_a_question():
+    session = _thursday_fever_then_an_allergy_answer()
+    _say(session, "agent", "How high did it get?")
+    _say(session, "patient", "Around 101 at night.")
+
+    result = create_tool_handlers(session, verifier_llm=_Verifier("SUPPORTED"))["update_intake_record"](
+        _yes("fever", "suffering from fever since Thursday, around 101 at night", "Around 101 at night")
+    )
+
+    assert result.data["recorded"] is True
+    assert [e for e in session.question_events if e.confirms_fact_id] == []
