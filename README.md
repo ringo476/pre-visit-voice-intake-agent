@@ -37,8 +37,13 @@ Patient audio
    -> reply text -> Text-to-Speech -> audio back to patient
 
 Frontend runs its own voice-activity detection so the patient can interrupt the agent mid-reply
-(barge-in) — the frontend stops playback locally the instant it detects speech; this is the entire
-interruption mechanism, since STT/TTS are per-utterance batch calls rather than a live stream.
+(barge-in) — the frontend stops playback locally the instant it detects speech, since STT/TTS are
+per-utterance batch calls rather than a live stream.
+
+A question Ava asks counts as asked only when the browser reports (`playback_done`) that the audio of
+that reply played to the end. A barge-in leaves it uncounted, so a bare "No" said while interrupting is
+never read as the answer to a question the patient did not hear; the next turn asks that question
+again (or, if the interruption had no words, Ava repeats what she was saying).
 
 Document upload:
    file -> extract_text() router [deterministic, not the LLM]:
@@ -82,7 +87,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
     output/         brief_generator.py, fhir_export.py
     eval/           types.py, scenarios/, runner.py — 7 synthetic scenarios through the real graph
     main.py         FastAPI app: REST + WebSocket
-  tests/            pytest — 243 tests, no credentials required
+  tests/            pytest — 258 tests, no credentials required
 /frontend           React + Vite: welcome screen, live 3-pane conversation view (+ document upload), completion/clinician view
 ```
 
@@ -101,7 +106,7 @@ orchestration directly, with a scripted stand-in for Gemini):**
 
 ```bash
 cd backend
-.venv\Scripts\python.exe -m pytest -q          # 243 tests
+.venv\Scripts\python.exe -m pytest -q          # 258 tests
 .venv\Scripts\python.exe -m app.eval.runner    # 7 synthetic scenarios through the real graph
 ```
 
@@ -126,13 +131,13 @@ Copy `backend/.env.example` to `backend/.env` and fill in:
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to a GCP service account JSON with Cloud Speech-to-Text, Cloud
   Text-to-Speech, and Cloud Vision enabled
 
-Without these: all 243 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
+Without these: all 258 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
 and the LangGraph tests/eval use a scripted fake model), and the frontend UI works and shows a clear
 connection/microphone error rather than crashing.
 
 ## What's verified vs. what isn't
 
-**Fully tested (243 automated tests, no external dependency):** state engine provenance rules, safety
+**Fully tested (258 automated tests, no external dependency):** state engine provenance rules, safety
 engine, RAG retrieval (real Chroma vector store), document extraction router (real PDF text extraction via
 a generated test PDF; OCR path exercised with an injected fake), the full LangGraph orchestration loop
 (including a genuine loop-guard/recursion test), output generation (brief + FHIR), and the 7-scenario eval

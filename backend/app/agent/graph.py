@@ -24,7 +24,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.graph import END, MessagesState, StateGraph
 
 from app.agent.instructions import AGENT_PERSONA_INSTRUCTIONS
-from app.agent.session import SessionState
+from app.agent.session import (
+    CutOffQuestion,
+    SessionState,
+    mark_question_asked,
+    question_is_playing,
+    question_was_cut_off,
+)
 from app.logging_config import get_logger
 from app.retry import call_with_retry
 from app.agent.tool_definitions import build_tool_definitions
@@ -244,23 +250,41 @@ def _extract_text(content: object) -> str:
     return str(content)
 
 
-def _mark_spoken_question(session: SessionState, events_before: int) -> None:
-    """Stamps the question the agent just asked, once its reply is final.
+def _mark_spoken_question(session: SessionState, events_before: int, await_playback: bool = False) -> None:
+    """Picks out the question the agent just asked, once its reply is final.
     get_next_intake_question logs a QuestionEvent the moment the tool runs,
     which is before the agent has said anything — so logging alone proves
-    nothing was asked. Only the last event created this turn is stamped (the
+    nothing was asked. Only the last event created this turn counts (the
     persona asks one question per turn, and an earlier lookup in the same
     turn may have been for a field the model then didn't ask about), and
     only after the reply has been appended to the transcript, so
     asked_in_turn is that agent turn's index. A turn that was superseded
     never reaches here, so its events stay unstamped and can never back a
-    denial."""
+    denial.
+
+    With `await_playback` (every live call) the question is not stamped yet:
+    a reply that is final is not a reply the patient has heard. It is stamped
+    by question_was_heard when the browser reports the audio played to the
+    end, and if the patient talks over it first, it is never stamped."""
     new_events = session.question_events[events_before:]
     if not new_events or not session.transcript[-1].text.strip():
         return  # nothing was logged, or the reply was empty so nothing was actually said
     event = new_events[-1]
-    event.asked_in_turn = len(session.transcript) - 1
-    event.spoken_text = session.transcript[-1].text
+    reply_index = len(session.transcript) - 1
+    if await_playback:
+        question_is_playing(session, event.id, reply_index)
+    else:
+        mark_question_asked(session, event, reply_index)
+
+
+def _cut_off_note(cut: CutOffQuestion) -> str:
+    return (
+        f'Your previous message was cut off when the patient started speaking, so they did not hear all of it, '
+        f'including your question about "{cut.label}". You had said: "{cut.reply_text}" '
+        f"Because they never heard that question, a bare yes or no in their new message is not an answer to it: "
+        f"record something about that topic only if they clearly say it themselves. Respond to what they just "
+        f"said, then ask that question again (get_next_intake_question will suggest it)."
+    )
 
 
 def run_agent_turn(
@@ -271,6 +295,7 @@ def run_agent_turn(
     turn_generation: Optional[int] = None,
     ranking_llm: Optional[BaseChatModel] = None,
     verifier_llm: Optional[BaseChatModel] = None,
+    await_playback: bool = False,
 ) -> dict:
     """Runs one full patient turn: logs the utterance, replays the
     session's transcript-so-far as the conversation history (tool-call
@@ -289,7 +314,15 @@ def run_agent_turn(
     this one while it was in flight, its reply is dropped instead of being
     appended to the transcript — an interrupted turn's late answer should
     never land in the conversation after the fact.
+
+    `await_playback` is True on a live call, where the reply reaches the patient
+    as audio: the question in it counts as asked only once the browser reports
+    the audio finished (see session.question_was_heard). A reply still marked as
+    playing when a new turn starts never finished, so it counts as cut off, and
+    this turn is told to ask that question again.
     """
+    if await_playback:
+        question_was_cut_off(session)
     session.transcript.append(
         TranscriptTurn(
             id=str(uuid.uuid4()), speaker="patient", text=patient_utterance, timestamp=datetime.now(timezone.utc).isoformat()
@@ -304,6 +337,8 @@ def run_agent_turn(
     messages: list[BaseMessage] = [SystemMessage(content=AGENT_PERSONA_INSTRUCTIONS)]
     if system_note:
         messages.append(SystemMessage(content=system_note))
+    if session.cut_off_question is not None:
+        messages.append(SystemMessage(content=_cut_off_note(session.cut_off_question)))
     for turn in session.transcript:
         message_cls = HumanMessage if turn.speaker == "patient" else AIMessage
         messages.append(message_cls(content=turn.text))
@@ -322,7 +357,8 @@ def run_agent_turn(
     session.transcript.append(
         TranscriptTurn(id=str(uuid.uuid4()), speaker="agent", text=reply_text, timestamp=datetime.now(timezone.utc).isoformat())
     )
-    _mark_spoken_question(session, events_before)
+    _mark_spoken_question(session, events_before, await_playback)
+    session.cut_off_question = None  # this turn has had its chance to ask it again
 
     return {"reply_text": reply_text, "superseded": False}
 
@@ -334,6 +370,7 @@ def run_opening_turn(
     llm: Optional[BaseChatModel] = None,
     turn_generation: Optional[int] = None,
     ranking_llm: Optional[BaseChatModel] = None,
+    await_playback: bool = False,
 ) -> dict:
     """Generates Ava's very first line, spoken before the patient has said
     anything — used when the chief complaint (and, when given, the
@@ -379,6 +416,6 @@ def run_opening_turn(
     session.transcript.append(
         TranscriptTurn(id=str(uuid.uuid4()), speaker="agent", text=reply_text, timestamp=datetime.now(timezone.utc).isoformat())
     )
-    _mark_spoken_question(session, events_before)
+    _mark_spoken_question(session, events_before, await_playback)
 
     return {"reply_text": reply_text, "superseded": False}

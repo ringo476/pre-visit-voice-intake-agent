@@ -21,7 +21,9 @@ def _capture_system_note(monkeypatch):
     run_agent_turn actually received."""
     captured = {}
 
-    def fake_run_agent_turn(session, patient_utterance, llm=None, system_note=None, turn_generation=None, ranking_llm=None):
+    def fake_run_agent_turn(
+        session, patient_utterance, llm=None, system_note=None, turn_generation=None, ranking_llm=None, **_ignored
+    ):
         captured["system_note"] = system_note
         return {"reply_text": "ok", "superseded": False}
 

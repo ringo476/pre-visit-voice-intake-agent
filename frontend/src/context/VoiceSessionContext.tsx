@@ -181,6 +181,12 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       isPlayingRef.current = false;
       URL.revokeObjectURL(url);
       setVoiceState("listening");
+      // The patient has now heard the whole reply. Until the server hears this,
+      // it does not count any question in the reply as asked; stopping the audio
+      // early (a barge-in) never fires onended, so that case is never reported.
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "playback_done" }));
+      }
     };
     audio.play().catch(() => {
       isPlayingRef.current = false;

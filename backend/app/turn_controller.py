@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.agent.graph import run_agent_turn, run_opening_turn
-from app.agent.session import SessionState, assign_protocol
+from app.agent.session import SessionState, assign_protocol, repeat_cut_off_question
 from app.protocol.classifier import classify_complaint
 from app.protocol.registry import get_protocol
 from app.retry import call_with_retry
@@ -124,6 +124,14 @@ def handle_utterance(session: SessionState, audio: bytes, generation: Optional[i
         # run through the agent or send back; `superseded` already means
         # "the client gets nothing for this attempt" to main.py, which
         # fits here too.
+        #
+        # One exception: the patient talked over Ava (a cough, a noise) and
+        # said nothing she can answer. The message they interrupted was never
+        # heard in full, so she says it again instead of going silent.
+        if generation is None or session.turn_generation == generation:
+            repeated = repeat_cut_off_question(session)
+            if repeated:
+                return TurnOutcome(transcript="", reply_text=repeated, audio=synthesize_speech(repeated))
         return TurnOutcome(transcript="", reply_text="", audio=b"", superseded=True)
 
     # A low-confidence transcription still gets sent through — rejecting it
@@ -166,7 +174,9 @@ def run_text_turn(
     when both are present, rather than one silently overwriting the other."""
     notes = [n for n in (_classify_and_note(session, patient_text), extra_system_note) if n]
     system_note = "\n".join(notes) if notes else None
-    result = run_agent_turn(session, patient_text, system_note=system_note, turn_generation=generation)
+    result = run_agent_turn(
+        session, patient_text, system_note=system_note, turn_generation=generation, await_playback=True
+    )
     if result.get("superseded"):
         return TurnOutcome(transcript=patient_text, reply_text="", audio=b"", superseded=True)
     audio_out = synthesize_speech(result["reply_text"])
@@ -181,7 +191,7 @@ def run_opening_line(session: SessionState, reason_text: str, when_text: Optiona
     clinic's booking already named a reason and a time for the visit.
     `transcript` comes back empty: no patient utterance kicked this off,
     Ava is speaking first."""
-    result = run_opening_turn(session, reason_text, when_text=when_text)
+    result = run_opening_turn(session, reason_text, when_text=when_text, await_playback=True)
     audio_out = synthesize_speech(result["reply_text"])
     return TurnOutcome(transcript="", reply_text=result["reply_text"], audio=audio_out)
 

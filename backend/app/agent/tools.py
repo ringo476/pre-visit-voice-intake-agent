@@ -403,7 +403,13 @@ def create_tool_handlers(
             )
 
         next_field = missing[0]
-        if llm is not None:
+        # A question the patient talked over has to be asked again, so it
+        # takes priority over the usual ordering and over the ranker below.
+        cut_off = session.cut_off_question
+        repeat = next((m for m in missing if cut_off and m.field == cut_off.field), None)
+        if repeat is not None:
+            next_field = repeat
+        elif llm is not None:
             # Advisory reordering only — see question_prioritizer.py for the
             # guardrail: any failure here silently keeps the fixed-order
             # default above, and nothing is ever dropped from `missing`,

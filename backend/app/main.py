@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 load_dotenv()
 
-from app.agent.session import SessionState, create_session
+from app.agent.session import SessionState, create_session, question_was_cut_off, question_was_heard
 from app.db import DATABASE_URL, init_db
 from app.documents.document_ingest import SUPPORTED_IMAGE_MIME_TYPES, UnsupportedDocumentTypeError, extract_text
 from app.documents.document_store import add_document, clear_session, create_uploaded_document
@@ -349,12 +349,22 @@ async def voice_socket(websocket: WebSocket):
                     # further model/tool calls instead of finishing in the
                     # background and landing a stale reply in the transcript.
                     session.turn_generation += 1
+                    # Whatever reply was playing did not finish: its question
+                    # was not heard in full, so it is never counted as asked.
+                    question_was_cut_off(session)
                     logger.info("barge-in signaled by client", extra={"session_id": session_id})
+                elif control.get("type") == "playback_done":
+                    # The browser played Ava's reply to the end. Only now has
+                    # the patient heard the question in it, so only now does
+                    # it count as asked.
+                    if question_was_heard(session):
+                        await save_session(session)
                 continue
 
             if "bytes" in message and message["bytes"] is not None:
                 session.turn_generation += 1
                 my_generation = session.turn_generation
+                question_was_cut_off(session)  # a reply still playing when the patient speaks was not finished
                 await websocket.send_json({"type": "voice_state", "state": "thinking"})
                 try:
                     outcome = await asyncio.to_thread(handle_utterance, session, message["bytes"], my_generation)
