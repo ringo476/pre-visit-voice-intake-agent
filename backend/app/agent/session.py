@@ -13,6 +13,9 @@ from app.schemas.protocol_config import ProtocolConfig
 from app.state_engine import create_empty_record
 
 UNCLASSIFIED_PROTOCOL_ID = "unclassified"
+# The question log entry for the read-back Ava speaks before finalizing. It is not a
+# checklist field, so it can never be mistaken for a question about one.
+READBACK_FIELD = "readback"
 
 
 @dataclass
@@ -71,6 +74,10 @@ class SessionState:
     # losing it is that the question simply never counts as asked.
     playing_question: Optional[PlayingQuestion] = None
     cut_off_question: Optional[CutOffQuestion] = None
+    # The id of the read-back question while the graph is paused (a LangGraph interrupt)
+    # waiting for the patient to confirm it. Live-call state like the two above: never
+    # persisted, and losing it only means the read-back is repeated.
+    pending_readback_event_id: Optional[str] = None
     # None until the patient explicitly consents to this conversation being
     # handled by an AI assistant — required before the voice call proceeds
     # at all (see main.py's /api/appointments/mock and the WebSocket's
@@ -152,7 +159,7 @@ def question_was_cut_off(session: SessionState) -> None:
     if playing is None or playing.reply_index >= len(session.transcript):
         return
     event = _event_by_id(session, playing.event_id)
-    if event is None:
+    if event is None or event.field == READBACK_FIELD:
         return
     session.cut_off_question = CutOffQuestion(
         event_id=event.id,
@@ -175,3 +182,33 @@ def repeat_cut_off_question(session: SessionState) -> Optional[str]:
     )
     question_is_playing(session, cut.event_id, len(session.transcript) - 1)
     return cut.reply_text
+
+
+def speak_readback(session: SessionState, text: str, await_playback: bool) -> None:
+    """Ava reads the recorded answers back. The words become an agent turn, and a
+    question-log entry remembers it: it counts as heard only once the audio has
+    played to the end, exactly like a checklist question."""
+    session.transcript.append(
+        TranscriptTurn(id=str(uuid.uuid4()), speaker="agent", text=text, timestamp=datetime.now(timezone.utc).isoformat())
+    )
+    reply_index = len(session.transcript) - 1
+    event = QuestionEvent(
+        id=str(uuid.uuid4()),
+        field=READBACK_FIELD,
+        question_text="Read-back of the recorded answers",
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+    session.question_events.append(event)
+    session.pending_readback_event_id = event.id
+    if await_playback:
+        question_is_playing(session, event.id, reply_index)
+    else:
+        mark_question_asked(session, event, reply_index)
+
+
+def readback_was_heard(session: SessionState) -> bool:
+    """True if the read-back the graph is waiting on was heard to the end."""
+    if session.pending_readback_event_id is None:
+        return False
+    event = _event_by_id(session, session.pending_readback_event_id)
+    return event is not None and event.asked_in_turn is not None

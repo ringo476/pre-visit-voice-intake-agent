@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 load_dotenv()
 
+from app.agent.graph import release_conversation
 from app.agent.session import SessionState, create_session, question_was_cut_off, question_was_heard
 from app.db import DATABASE_URL, init_db
 from app.documents.document_ingest import SUPPORTED_IMAGE_MIME_TYPES, UnsupportedDocumentTypeError, extract_text
@@ -393,3 +394,4 @@ async def voice_socket(websocket: WebSocket):
         sessions.pop(session_id, None)
         session_sockets.pop(session_id, None)
         clear_session(session_id)
+        release_conversation(session_id)  # drop the graph's saved state for this call

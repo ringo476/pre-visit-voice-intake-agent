@@ -114,7 +114,13 @@ def create_tool_handlers(
     session: SessionState,
     llm: Optional[BaseChatModel] = None,
     verifier_llm: Optional[BaseChatModel] = None,
+    confirm_finalization: bool = False,
 ) -> _Handlers:
+    """`confirm_finalization` is True on a live call: finishing the intake is then
+    not done by the tool at all. The tool only checks the intake may finish and
+    asks the graph to pause (a LangGraph interrupt) so the patient can hear the
+    read-back and say yes. Left False, the tool finalizes immediately, which is
+    what the offline tests and scripted evals use."""
     verdict_cache: dict[str, object] = {}
     # Handlers are built once per turn. A "which is right?" question asked in this
     # turn is remembered by the fact it concerns, so the prepare pass and the real
@@ -500,9 +506,9 @@ def create_tool_handlers(
                     "missing_fields": [],
                     "done": True,
                     "message": (
-                        "Everything required has been covered. Before finishing, read back the key facts "
-                        "you've gathered to the patient in your own words and ask them to confirm or correct "
-                        "anything, then call generate_clinician_brief."
+                        "Everything required has been covered. Call generate_clinician_brief to finish: "
+                        "the system then reads the recorded answers back to the patient and finalizes the "
+                        "intake only after they confirm, so do not read them back yourself."
                     ),
                 }
             )
@@ -595,6 +601,18 @@ def create_tool_handlers(
             return _fail(
                 f"Cannot finalize: required fields still open: {fields}. "
                 f"Pass early_termination_reason to finalize anyway."
+            )
+
+        if confirm_finalization:
+            return _ok(
+                {
+                    "awaiting_patient_confirmation": True,
+                    "missing_fields": [m.model_dump() for m in missing],
+                    "message": (
+                        "Not finalized yet. The recorded answers are about to be read back to the patient, "
+                        "and the intake is finalized only if they confirm. Do not say it is finished."
+                    ),
+                }
             )
 
         session.brief_finalized = True
