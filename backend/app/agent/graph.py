@@ -15,9 +15,14 @@ Three LangGraph features are used on purpose:
     per run (the live session, this turn's tool handlers, the model) is passed in
     at run time as a RunContext, never captured in the graph.
   * A checkpointer saves the graph's state after every step, under a thread id
-    equal to the session id. Each turn replaces the saved messages with the
-    history rebuilt from the verbatim transcript, so a checkpoint shows exactly
-    what the model saw and did on the latest turn, and a run can be paused.
+    equal to the session id, and it is the conversation's memory: a normal turn
+    sends only the patient's new words and the saved thread supplies the rest.
+    The verbatim transcript stays the evidence log (the quote checks read it),
+    and every turn checks that the saved conversation still matches it. If it
+    does not (a restart, a dropped connection, a turn that was cut off) the
+    thread is rebuilt from the transcript. Tool exchanges are dropped before the
+    next turn, so the model is shown the same conversation as ever, and a
+    checkpoint shows exactly what it saw and did on the latest turn.
   * confirm_finalization uses interrupt(). Finishing the intake is the one
     irreversible step, so the run pauses there with the read-back for the
     patient, and resumes (Command(resume=...)) with their next utterance.
@@ -32,7 +37,7 @@ import json
 import os
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -178,6 +183,9 @@ class RunContext:
     handlers: dict
     model: BaseChatModel
     turn_generation: Optional[int] = None
+    # Sent to the model in front of the saved conversation for this run only, never saved:
+    notes: list = field(default_factory=list)  # one-turn system notes
+    opening_trigger: Optional[str] = None  # the synthetic first message of a call
 
     def is_stale(self) -> bool:
         """main.py bumps session.turn_generation on every new utterance and on a
@@ -185,22 +193,35 @@ class RunContext:
         return self.turn_generation is not None and self.session.turn_generation != self.turn_generation
 
 
+def _model_input(ctx: RunContext, saved: list) -> list:
+    """What the model is actually sent: the persona prompt, this run's notes, the synthetic
+    opening message when this is the first turn of a call, then the saved conversation. The
+    first three are added here every time and are never saved in the thread."""
+    messages: list = [SystemMessage(content=AGENT_PERSONA_INSTRUCTIONS)]
+    messages.extend(SystemMessage(content=note) for note in ctx.notes)
+    if ctx.opening_trigger:
+        messages.append(HumanMessage(content=ctx.opening_trigger))
+    messages.extend(saved)
+    return messages
+
+
 def _reason(state: AgentState, runtime: Runtime[RunContext]) -> dict:
     ctx = runtime.context
     if ctx.is_stale():
         return {"messages": [AIMessage(content="")]}
+    model_input = _model_input(ctx, state["messages"])
     logger.debug(
         "calling model",
         extra={
             "session_id": ctx.session.session_id,
-            "message_count": len(state["messages"]),
+            "message_count": len(model_input),
             "messages": [
                 {"role": type(m).__name__, "content_preview": str(m.content)[:80], "tool_calls": getattr(m, "tool_calls", None)}
-                for m in state["messages"]
+                for m in model_input
             ],
         },
     )
-    response = call_with_retry(lambda: ctx.model.invoke(state["messages"]), what="Gemini reasoning call")
+    response = call_with_retry(lambda: ctx.model.invoke(model_input), what="Gemini reasoning call")
     return {"messages": [response]}
 
 
@@ -317,6 +338,8 @@ def _make_context(
     ranking_llm: Optional[BaseChatModel],
     verifier_llm: Optional[BaseChatModel],
     confirm_finalization: Optional[bool],
+    notes: Optional[list] = None,
+    opening_trigger: Optional[str] = None,
 ) -> RunContext:
     """Builds this run's context. `llm` is injectable for tests.
 
@@ -340,7 +363,14 @@ def _make_context(
     handlers = create_tool_handlers(
         session, ranking_llm, verifier_llm=verifier_llm, confirm_finalization=confirm_finalization
     )
-    return RunContext(session=session, handlers=handlers, model=model, turn_generation=turn_generation)
+    return RunContext(
+        session=session,
+        handlers=handlers,
+        model=model,
+        turn_generation=turn_generation,
+        notes=list(notes or []),
+        opening_trigger=opening_trigger,
+    )
 
 
 def _run_config(session: SessionState) -> dict:
@@ -348,14 +378,80 @@ def _run_config(session: SessionState) -> dict:
     return {"configurable": {"thread_id": session.session_id}, "recursion_limit": MAX_TOOL_ROUNDS * 2 + 2}
 
 
-def _fresh_input(messages: list[BaseMessage]) -> dict:
-    # Every turn rebuilds the model's input from the verbatim transcript, so the saved history is
-    # replaced, not added to: RemoveMessage(REMOVE_ALL_MESSAGES) clears it before the new list goes in.
+def _spoken(messages) -> list[tuple[str, str]]:
+    """The spoken conversation inside a list of messages: what the patient said and what Ava
+    said, in order, with empty replies left out."""
+    spoken = []
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            spoken.append(("patient", _extract_text(m.content)))
+        elif isinstance(m, AIMessage) and not m.tool_calls:
+            text = _extract_text(m.content)
+            if text.strip():
+                spoken.append(("agent", text))
+    return spoken
+
+
+def _spoken_in_transcript(turns) -> list[tuple[str, str]]:
+    return [(t.speaker, t.text) for t in turns if not (t.speaker == "agent" and not t.text.strip())]
+
+
+def _is_working_message(message) -> bool:
+    """Tool requests, tool results and empty replies are scaffolding for the turn that made
+    them. They are dropped before the next turn so the model is never shown an old tool result,
+    which could be out of date by then."""
+    if isinstance(message, ToolMessage):
+        return True
+    return isinstance(message, AIMessage) and (bool(message.tool_calls) or not _extract_text(message.content).strip())
+
+
+def _is_plain(message: AIMessage) -> bool:
+    return isinstance(message.content, str) and not (
+        message.additional_kwargs or message.response_metadata or message.usage_metadata
+    )
+
+
+def _transcript_messages(turns) -> list[BaseMessage]:
+    return [(HumanMessage if t.speaker == "patient" else AIMessage)(content=t.text) for t in turns]
+
+
+def _turn_input(graph, config, session: SessionState) -> dict:
+    """What to send for the patient's newest words.
+
+    Normally that is only those words: the checkpointer already holds the conversation, so
+    the only other thing sent is an instruction to drop last turn's scaffolding. The saved
+    conversation is checked against the transcript first, because the transcript is the
+    verbatim record and the saved thread is only a copy of it. If they differ (a restart wiped
+    the saved state, a turn was cut off, the app spoke a line the graph never saw) the thread is
+    thrown away and rebuilt from the transcript. That rebuild is also exactly what every turn
+    used to do, so the worst case is the old behaviour."""
+    earlier = session.transcript[:-1]  # everything before the utterance just appended
+    saved = graph.get_state(config).values.get("messages", [])
+    if _spoken(saved) == _spoken_in_transcript(earlier):
+        carry = []
+        for m in saved:
+            if _is_working_message(m):
+                carry.append(RemoveMessage(id=m.id))
+            elif isinstance(m, AIMessage) and not _is_plain(m):
+                # A real model reply can arrive as content blocks with extra metadata attached. What the
+                # model is shown for an earlier reply must be exactly its text, as the transcript has it,
+                # so the saved message is replaced (same id) by a plain-text one.
+                carry.append(AIMessage(id=m.id, content=_extract_text(m.content)))
+    else:
+        carry = [RemoveMessage(id=REMOVE_ALL_MESSAGES), *_transcript_messages(earlier)]
+        if saved:
+            logger.info("saved conversation did not match the transcript; rebuilt it", extra={"session_id": session.session_id})
+    newest = session.transcript[-1]
     return {
-        "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages],
+        "messages": [*carry, HumanMessage(content=newest.text)],
         "finalize_requested": False,
         "finalize_outcome": None,
     }
+
+
+def _opening_input() -> dict:
+    # The first turn of a call starts the thread from nothing.
+    return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)], "finalize_requested": False, "finalize_outcome": None}
 
 
 def _waiting_for_confirmation(graph, config) -> bool:
@@ -475,7 +571,10 @@ def run_agent_turn(
 
     graph = get_graph()
     config = _run_config(session)
-    ctx = _make_context(session, llm, turn_generation, ranking_llm, verifier_llm, confirm_finalization)
+    notes = [system_note] if system_note else []
+    if session.cut_off_question is not None:
+        notes.append(_cut_off_note(session.cut_off_question))
+    ctx = _make_context(session, llm, turn_generation, ranking_llm, verifier_llm, confirm_finalization, notes=notes)
 
     if session.pending_readback_event_id is not None:
         # The graph is paused at the read-back, and this utterance is the patient's answer to it.
@@ -495,16 +594,7 @@ def run_agent_turn(
 
     events_before = len(session.question_events)
 
-    messages: list[BaseMessage] = [SystemMessage(content=AGENT_PERSONA_INSTRUCTIONS)]
-    if system_note:
-        messages.append(SystemMessage(content=system_note))
-    if session.cut_off_question is not None:
-        messages.append(SystemMessage(content=_cut_off_note(session.cut_off_question)))
-    for turn in session.transcript:
-        message_cls = HumanMessage if turn.speaker == "patient" else AIMessage
-        messages.append(message_cls(content=turn.text))
-
-    result = graph.invoke(_fresh_input(messages), config, context=ctx)
+    result = graph.invoke(_turn_input(graph, config, session), config, context=ctx)
 
     if turn_generation is not None and session.turn_generation != turn_generation:
         return {"reply_text": "", "superseded": True}
@@ -550,7 +640,6 @@ def run_opening_turn(
     """
     graph = get_graph()
     config = _run_config(session)
-    ctx = _make_context(session, llm, turn_generation, ranking_llm, None, None)
     events_before = len(session.question_events)
 
     when_clause = f' scheduled for {when_text},' if when_text else ""
@@ -561,12 +650,9 @@ def run_opening_turn(
         f'question. Do not ask an open-ended "what brings you in today" question — you already know '
         f"why they're here.]"
     )
-    messages: list[BaseMessage] = [
-        SystemMessage(content=AGENT_PERSONA_INSTRUCTIONS),
-        HumanMessage(content=opening_trigger),
-    ]
+    ctx = _make_context(session, llm, turn_generation, ranking_llm, None, None, opening_trigger=opening_trigger)
 
-    result = graph.invoke(_fresh_input(messages), config, context=ctx)
+    result = graph.invoke(_opening_input(), config, context=ctx)
 
     if turn_generation is not None and session.turn_generation != turn_generation:
         return {"reply_text": "", "superseded": True}

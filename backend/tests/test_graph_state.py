@@ -12,11 +12,11 @@ from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 import app.agent.graph as graph_module
 from app.agent.finalization import CLOSING_TEXT, is_clear_yes
-from app.agent.graph import configure_checkpointer, get_graph, release_conversation, run_agent_turn
+from app.agent.graph import configure_checkpointer, get_graph, release_conversation, run_agent_turn, run_opening_turn
 from app.agent.session import create_session, question_was_heard
 from app.agent.tools import create_tool_handlers
 from app.output.readback import build_readback
-from app.schemas.intake_record import Polarity, Source
+from app.schemas.intake_record import Polarity, Source, TranscriptTurn
 from app.schemas.protocol_config import ProtocolConfig
 from app.state_engine import apply_fact
 
@@ -34,8 +34,10 @@ class Script:
     def __init__(self, replies):
         self.replies = replies
         self.calls = 0
+        self.seen = []  # every message list the model was sent
 
     def invoke(self, messages):
+        self.seen.append(list(messages))
         reply = self.replies[min(self.calls, len(self.replies) - 1)]
         self.calls += 1
         return reply
@@ -103,24 +105,183 @@ def test_the_checkpoint_shows_what_the_model_saw_and_did_on_the_latest_turn():
     run_agent_turn(session, "I have a cough", llm=script)
 
     saved = get_graph().get_state(thread(session)).values["messages"]
-    assert [type(m).__name__ for m in saved] == ["SystemMessage", "HumanMessage", "AIMessage", "ToolMessage", "AIMessage"]
-    assert saved[1].content == "I have a cough"
-    assert saved[2].tool_calls[0]["name"] == "get_next_intake_question"
-    assert "suggested" in json.loads(saved[3].content)["data"]
-    assert saved[4].content == "When did it start?"
+    assert [type(m).__name__ for m in saved] == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"]
+    assert saved[0].content == "I have a cough"
+    assert saved[1].tool_calls[0]["name"] == "get_next_intake_question"
+    assert "suggested" in json.loads(saved[2].content)["data"]
+    assert saved[3].content == "When did it start?"
 
 
-def test_each_turn_replaces_the_saved_history_instead_of_adding_to_it():
+def conversation(model_input):
+    """The part of a model input after the persona prompt, as (kind, text) pairs."""
+    return [(type(m).__name__, m.content) for m in model_input[1:]]
+
+
+def count_rebuilds(monkeypatch):
+    rebuilds = []
+    real = graph_module._transcript_messages
+    monkeypatch.setattr(graph_module, "_transcript_messages", lambda turns: rebuilds.append(len(turns)) or real(turns))
+    return rebuilds
+
+
+def test_the_checkpointer_carries_the_conversation_so_a_normal_turn_sends_only_the_new_words(monkeypatch):
+    rebuilds = count_rebuilds(monkeypatch)
     session = create_session("s1", PROTOCOL)
     script = Script([say("First reply."), say("Second reply.")])
 
     run_agent_turn(session, "one", llm=script)
     run_agent_turn(session, "two", llm=script)
 
+    assert isinstance(script.seen[1][0], SystemMessage)  # the persona prompt is added on every call
+    assert conversation(script.seen[1]) == [("HumanMessage", "one"), ("AIMessage", "First reply."), ("HumanMessage", "two")]
+    assert rebuilds == []  # the history came from the checkpoint, not from the transcript
+
+
+def test_last_turns_tool_exchange_is_not_shown_to_the_model_on_the_next_turn():
+    session = create_session("s1", PROTOCOL)
+    script = Script([call("get_next_intake_question", {}), say("When did it start?"), say("Thanks.")])
+
+    run_agent_turn(session, "I have a cough", llm=script)
+    run_agent_turn(session, "Two weeks ago", llm=script)
+
+    second_turn = script.seen[2]
+    assert not any(isinstance(m, ToolMessage) for m in second_turn)
+    assert not any(isinstance(m, AIMessage) and m.tool_calls for m in second_turn)
+    assert conversation(second_turn) == [
+        ("HumanMessage", "I have a cough"), ("AIMessage", "When did it start?"), ("HumanMessage", "Two weeks ago"),
+    ]
+
+
+def test_when_the_saved_conversation_is_lost_it_is_rebuilt_from_the_transcript(monkeypatch):
+    """For example after a restart or a dropped connection: the saved thread is empty but the
+    transcript, reloaded from the database, is not."""
+    rebuilds = count_rebuilds(monkeypatch)
+    session = create_session("s1", PROTOCOL)
+    script = Script([say("A."), say("B."), say("C.")])
+    run_agent_turn(session, "one", llm=script)
+    run_agent_turn(session, "two", llm=script)
+    release_conversation("s1")
+
+    run_agent_turn(session, "three", llm=script)
+
+    assert conversation(script.seen[2]) == [
+        ("HumanMessage", "one"), ("AIMessage", "A."), ("HumanMessage", "two"), ("AIMessage", "B."), ("HumanMessage", "three"),
+    ]
+    assert rebuilds == [4]  # rebuilt once, from the four earlier turns
+
+
+def test_a_line_the_app_spoke_outside_the_graph_is_picked_up_by_a_rebuild(monkeypatch):
+    rebuilds = count_rebuilds(monkeypatch)
+    session = create_session("s1", PROTOCOL)
+    script = Script([say("First.")])
+    run_agent_turn(session, "one", llm=script)
+    # e.g. a message replayed after a patient talked over it: the graph never saw this line
+    session.transcript.append(TranscriptTurn(id="x", speaker="agent", text="Replayed line.", timestamp="t"))
+
+    run_agent_turn(session, "two", llm=script)
+
+    assert ("AIMessage", "Replayed line.") in conversation(script.seen[-1])
+    assert rebuilds == [3]
+
+
+def test_a_late_reply_from_a_turn_the_patient_talked_over_is_never_shown_to_the_model(monkeypatch):
+    """The model call was already in flight when the patient interrupted, so its reply arrives
+    after the turn was thrown away. It is saved in the thread, which therefore no longer matches
+    the transcript, so the next turn heals the thread by rebuilding it from the transcript."""
+    rebuilds = count_rebuilds(monkeypatch)
+    session = create_session("s1", PROTOCOL)
+
+    class InterruptedInFlight:
+        def invoke(self, messages):
+            session.turn_generation += 1  # the patient interrupted while the model was answering
+            return say("late reply that is thrown away")
+
+    first = run_agent_turn(session, "one", llm=InterruptedInFlight(), turn_generation=session.turn_generation)
+    assert first["superseded"] is True
+    assert [t.speaker for t in session.transcript] == ["patient"]  # no reply was added to the transcript
+
+    script = Script([say("Okay.")])
+    run_agent_turn(session, "two", llm=script)
+
+    assert conversation(script.seen[0]) == [("HumanMessage", "one"), ("HumanMessage", "two")]
+    assert rebuilds == [1]
+
+
+def test_a_turn_stopped_before_its_model_call_leaves_nothing_to_rebuild(monkeypatch):
+    rebuilds = count_rebuilds(monkeypatch)
+    session = create_session("s1", PROTOCOL)
+    session.turn_generation = 5
+
+    first = run_agent_turn(session, "one", llm=Script([say("never asked")]), turn_generation=4)  # already superseded
+    assert first["superseded"] is True
+
+    script = Script([say("Okay.")])
+    run_agent_turn(session, "two", llm=script)
+
+    assert conversation(script.seen[0]) == [("HumanMessage", "one"), ("HumanMessage", "two")]
+    assert rebuilds == []  # only an empty placeholder was saved, and it is simply dropped
+
+
+def test_an_earlier_reply_is_shown_to_the_model_as_plain_text_even_if_it_arrived_as_content_blocks(monkeypatch):
+    """A real model reply can come back as content blocks with metadata attached. What the model is
+    shown for an earlier turn must be exactly its text, the same as the transcript."""
+    rebuilds = count_rebuilds(monkeypatch)
+    session = create_session("s1", PROTOCOL)
+    fancy = AIMessage(
+        content=[{"type": "text", "text": "Hello there."}],
+        additional_kwargs={"signature": "abc"},
+        response_metadata={"finish_reason": "STOP"},
+    )
+    script = Script([fancy, say("Okay.")])
+
+    run_agent_turn(session, "one", llm=script)
+    run_agent_turn(session, "two", llm=script)
+
+    earlier_reply = script.seen[1][2]  # persona, patient "one", then Ava's earlier reply
+    assert earlier_reply.content == "Hello there."
+    assert not earlier_reply.additional_kwargs and not earlier_reply.response_metadata
+    assert rebuilds == []
+
+
+def test_an_empty_reply_in_the_transcript_does_not_break_the_match(monkeypatch):
+    rebuilds = count_rebuilds(monkeypatch)
+    session = create_session("s1", PROTOCOL)
+    script = Script([say(""), say("Okay.")])
+
+    run_agent_turn(session, "one", llm=script)
+    run_agent_turn(session, "two", llm=script)
+
+    assert rebuilds == []
+    assert conversation(script.seen[1]) == [("HumanMessage", "one"), ("HumanMessage", "two")]
+
+
+def test_a_one_turn_note_is_sent_for_that_turn_only_and_never_saved():
+    session = create_session("s1", PROTOCOL)
+    script = Script([say("A."), say("B.")])
+
+    run_agent_turn(session, "one", llm=script, system_note="NOTE-FOR-THIS-TURN")
+    run_agent_turn(session, "two", llm=script)
+
+    assert "NOTE-FOR-THIS-TURN" in [m.content for m in script.seen[0] if isinstance(m, SystemMessage)]
+    assert "NOTE-FOR-THIS-TURN" not in [m.content for m in script.seen[1] if isinstance(m, SystemMessage)]
     saved = get_graph().get_state(thread(session)).values["messages"]
-    # persona + transcript as it stood at the second turn (patient, agent, patient) + the new reply
-    assert len(saved) == 1 + 3 + 1
-    assert [m.content for m in saved[1:]] == ["one", "First reply.", "two", "Second reply."]
+    assert not any(isinstance(m, SystemMessage) for m in saved)  # neither the persona nor any note is stored
+
+
+def test_the_synthetic_opening_message_is_never_saved_into_the_conversation():
+    session = create_session("s1", PROTOCOL)
+    script = Script([say("Hi, I see you are coming in about a cough. When did it start?"), say("Thanks.")])
+
+    run_opening_turn(session, "persistent cough", llm=script)
+    saved = get_graph().get_state(thread(session)).values["messages"]
+    assert [type(m).__name__ for m in saved] == ["AIMessage"]  # just Ava's line, not the trigger
+
+    run_agent_turn(session, "Two weeks ago", llm=script)
+
+    assert "[This is the start of the call" in script.seen[0][1].content  # the trigger was sent on the opening call
+    assert conversation(script.seen[1]) == [
+        ("AIMessage", "Hi, I see you are coming in about a cough. When did it start?"), ("HumanMessage", "Two weeks ago"),
+    ]
 
 
 def test_releasing_a_conversation_forgets_its_saved_state():
@@ -180,6 +341,9 @@ def test_a_correction_does_not_finalize_and_is_handled_as_an_ordinary_turn():
     assert session.brief_finalized is False
     assert result["reply_text"] == "Thanks, I will note that allergy."  # the model handled the utterance
     assert script.calls == 2
+    shown = conversation(script.seen[-1])  # the model was shown the read-back Ava spoke, then the patient's reply
+    assert shown[-2][0] == "AIMessage" and shown[-2][1].startswith("Before I finish, let me read back what I have.")
+    assert shown[-1] == ("HumanMessage", "No, I'm also allergic to penicillin.")
     assert [t.speaker for t in session.transcript[-3:]] == ["agent", "patient", "agent"]
     assert get_graph().get_state(thread(session)).next == ()
 

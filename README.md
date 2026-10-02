@@ -62,7 +62,7 @@ top of it — is fully testable with a scripted fake model and no network access
 **LangGraph features in use** (see the docstring at the top of `app/agent/graph.py`):
 
 - **Compiled once.** The graph is built a single time and shared by every turn and every session. What differs per run (the live session, that turn's tool handlers, the model) is passed in at run time as a `RunContext`, so nothing is rebuilt per turn.
-- **Checkpointer.** Every step is saved under a thread id equal to the session id (`InMemorySaver` by default; pass a SQLite or Postgres saver to `configure_checkpointer()` to survive restarts). Each turn replaces the saved messages with the history rebuilt from the verbatim transcript, so a checkpoint shows exactly what the model saw and did on the latest turn. Saved state is dropped when a call ends.
+- **Checkpointer.** Every step is saved under a thread id equal to the session id (`InMemorySaver` by default; pass a SQLite or Postgres saver to `configure_checkpointer()` to survive restarts). The checkpointer is the conversation's memory: a normal turn sends only the patient's new words and the saved thread supplies the earlier conversation. The persona prompt and any one-turn note are added on every model call and never saved, and last turn's tool exchange is dropped first so the model is never shown an old tool result. The verbatim transcript stays the evidence log, and each turn checks that the saved conversation still matches it; if it has drifted (a restart, a dropped connection, a turn the patient talked over) the thread is rebuilt from the transcript. A checkpoint shows exactly what the model saw and did on the latest turn. Saved state is dropped when a call ends.
 - **Interrupt and resume.** Finishing the intake is the one irreversible step, so the run pauses there with a read-back built by code from the record. The patient's next utterance resumes the paused run (`Command(resume=...)`). Only a short, clear yes from a patient who heard the whole read-back finalizes the intake; anything else is handled as an ordinary turn.
 
 The 8 tools the model can call — each a narrow RPC into exactly one backend module:
@@ -94,7 +94,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
     output/         brief_generator.py, fhir_export.py
     eval/           types.py, scenarios/, runner.py — 7 synthetic scenarios through the real graph
     main.py         FastAPI app: REST + WebSocket
-  tests/            pytest — 351 tests, no credentials required
+  tests/            pytest — 360 tests, no credentials required
 /frontend           React + Vite: welcome screen, live 3-pane conversation view (+ document upload), completion/clinician view
 ```
 
@@ -113,7 +113,7 @@ orchestration directly, with a scripted stand-in for Gemini):**
 
 ```bash
 cd backend
-.venv\Scripts\python.exe -m pytest -q          # 351 tests
+.venv\Scripts\python.exe -m pytest -q          # 360 tests
 .venv\Scripts\python.exe -m app.eval.runner    # 7 synthetic scenarios through the real graph
 ```
 
@@ -138,13 +138,13 @@ Copy `backend/.env.example` to `backend/.env` and fill in:
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to a GCP service account JSON with Cloud Speech-to-Text, Cloud
   Text-to-Speech, and Cloud Vision enabled
 
-Without these: all 351 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
+Without these: all 360 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
 and the LangGraph tests/eval use a scripted fake model), and the frontend UI works and shows a clear
 connection/microphone error rather than crashing.
 
 ## What's verified vs. what isn't
 
-**Fully tested (351 automated tests, no external dependency):** state engine provenance rules, safety
+**Fully tested (360 automated tests, no external dependency):** state engine provenance rules, safety
 engine, RAG retrieval (real Chroma vector store), document extraction router (real PDF text extraction via
 a generated test PDF; OCR path exercised with an injected fake), the full LangGraph orchestration loop
 (including a genuine loop-guard/recursion test), output generation (brief + FHIR), and the 7-scenario eval
