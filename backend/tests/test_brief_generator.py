@@ -104,3 +104,14 @@ def test_brief_reports_a_corrected_denial_as_a_positive_finding():
 
     assert "denies fever" not in text.lower()
     assert "yes, about 101" in text
+
+
+def test_a_volunteered_dont_know_reads_as_unsure_not_as_a_reported_fact():
+    from app.schemas.intake_record import Polarity
+
+    record = create_empty_record("s1", PROTOCOL.protocol_id)
+    record = apply_fact(record, "onset", "patient does not know", "patient_reported", "I'm not sure when", 0.8, [], polarity=Polarity.UNKNOWN)
+
+    text = format_clinician_brief_as_text(generate_clinician_brief(record, PROTOCOL))
+
+    assert "Patient is unsure about onset." in text

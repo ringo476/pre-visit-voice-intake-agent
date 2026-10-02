@@ -10,7 +10,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from app.schemas.intake_record import Fact, FactStatus, IntakeRecord, QuestionEvent, Source, TranscriptTurn
+from app.schemas.intake_record import Fact, FactStatus, IntakeRecord, Polarity, QuestionEvent, Source, TranscriptTurn
 from app.schemas.protocol_config import ProtocolConfig
 
 AFFIRMATIVE_SOURCES = {Source.PATIENT_REPORTED, Source.DOCUMENT_SOURCED, Source.INFERRED}
@@ -35,6 +35,18 @@ def create_empty_record(session_id: str, protocol_id: str) -> IntakeRecord:
     return IntakeRecord(session_id=session_id, protocol_id=protocol_id, facts=[], created_at=now, updated_at=now)
 
 
+def derive_polarity(source: Source, value: str) -> Polarity:
+    """Fallback for code that records a fact without stating its polarity
+    (older call sites, saved data). The live tool states it explicitly.
+    Only this fallback ever reads the wording of the value."""
+    source = Source(source)
+    if source == Source.ASKED_AND_DENIED:
+        return Polarity.ABSENT
+    if source == Source.UNCERTAIN:
+        return Polarity.UNKNOWN
+    return Polarity.ABSENT if _looks_like_denial(value) else Polarity.PRESENT
+
+
 def apply_fact(
     record: IntakeRecord,
     field: str,
@@ -44,6 +56,7 @@ def apply_fact(
     confidence: float,
     question_events: list[QuestionEvent],
     question_event_id: Optional[str] = None,
+    polarity: Optional[Polarity] = None,
 ) -> IntakeRecord:
     """Appends a new fact to the record. Never mutates or removes existing facts."""
     source = Source(source)
@@ -74,6 +87,7 @@ def apply_fact(
         status=FactStatus.UNCONFIRMED,
         timestamp=timestamp,
         question_event_id=question_event_id,
+        polarity=polarity or derive_polarity(source, value),
     )
     return record.model_copy(update={"facts": [*record.facts, fact], "updated_at": timestamp})
 
@@ -157,6 +171,7 @@ def record_correction(
     new_value: str,
     evidence_span: str,
     confidence: float,
+    polarity: Optional[Polarity] = None,
 ) -> IntakeRecord:
     """Appends a corrected version of the current fact for `field`. The
     prior fact is left untouched; the new fact's `supersedes` links back to
@@ -190,6 +205,7 @@ def record_correction(
         status=FactStatus.CORRECTED,
         timestamp=timestamp,
         supersedes=prior.id,
+        polarity=polarity or derive_polarity(new_source, new_value),
         # A changed source means the new value was not given in answer to the
         # logged question, so it must not inherit that question's proof.
         question_event_id=prior.question_event_id if new_source == prior.source else None,
@@ -246,7 +262,7 @@ def get_missing_fields(record: IntakeRecord, protocol: ProtocolConfig) -> list[M
 
     def is_affirmed(field: str) -> bool:
         fact = current.get(field)
-        return fact is not None and fact.source in AFFIRMATIVE_SOURCES and not _looks_like_denial(fact.value)
+        return fact is not None and fact.source in AFFIRMATIVE_SOURCES and fact.polarity == Polarity.PRESENT
 
     missing: list[MissingField] = []
     for pf in protocol.fields:

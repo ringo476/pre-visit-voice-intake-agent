@@ -2,7 +2,7 @@
 (QuestionnaireResponse + MedicationStatement + AllergyIntolerance) —
 synthetic/demo data only, not wired to a real FHIR server."""
 
-from app.schemas.intake_record import Fact, IntakeRecord, Source
+from app.schemas.intake_record import Fact, IntakeRecord, Polarity, Source
 from app.schemas.protocol_config import ProtocolConfig
 from app.state_engine import get_current_facts
 
@@ -16,7 +16,7 @@ def _is_asserted(fact: Fact | None) -> bool:
     still listed in the QuestionnaireResponse with its provenance, but must
     never become a MedicationStatement or AllergyIntolerance — those assert
     something about the patient, and 'patient doesn't recall' asserts nothing."""
-    return _is_reported(fact) and fact.source != Source.UNCERTAIN
+    return _is_reported(fact) and fact.source != Source.UNCERTAIN and fact.polarity != Polarity.UNKNOWN
 
 
 def generate_fhir_export(record: IntakeRecord, protocol: ProtocolConfig) -> dict:
@@ -59,7 +59,7 @@ def generate_fhir_export(record: IntakeRecord, protocol: ProtocolConfig) -> dict
         medication_statements.append(
             {
                 "resourceType": "MedicationStatement",
-                "status": "not-taken" if fact.source == Source.ASKED_AND_DENIED else "active",
+                "status": "not-taken" if fact.polarity == Polarity.ABSENT else "active",
                 "subject": patient_ref,
                 "medicationCodeableConcept": {"text": fact.value},
                 "informationSource": {"display": fact.source.value},
@@ -72,7 +72,7 @@ def generate_fhir_export(record: IntakeRecord, protocol: ProtocolConfig) -> dict
     if _is_asserted(allergy_fact):
         allergy: dict = {
             "resourceType": "AllergyIntolerance",
-            "clinicalStatus": {"text": "denied" if allergy_fact.source == Source.ASKED_AND_DENIED else "active"},
+            "clinicalStatus": {"text": "denied" if allergy_fact.polarity == Polarity.ABSENT else "active"},
             "patient": patient_ref,
             "code": {"text": allergy_fact.value},
         }

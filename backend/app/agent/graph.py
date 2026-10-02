@@ -204,6 +204,15 @@ def build_graph(
                     for call in last.tool_calls
                 ]
             }
+        # Check every fact proposed in this message with ONE verifier call, ahead of
+        # the handlers running. If that fails for any reason, each handler falls
+        # back to verifying its own claim, so nothing is ever saved unverified.
+        prepare = getattr(handlers, "prepare", None)
+        if prepare is not None:
+            try:
+                prepare(last.tool_calls)
+            except Exception:  # noqa: BLE001
+                logger.exception("batched verification failed; handlers will verify individually")
         tool_messages: list[BaseMessage] = []
         for call in last.tool_calls:
             handler = handlers.get(call["name"])

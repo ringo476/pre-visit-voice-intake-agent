@@ -23,6 +23,15 @@ class Source(str, Enum):
     NOT_ASKED = "not_asked"
 
 
+class Polarity(str, Enum):
+    """The direction of the patient's answer about a topic. Stored on every
+    fact so nothing has to guess "is this a no?" from the wording of the value."""
+
+    PRESENT = "present"  # yes, it exists / here is the detail
+    ABSENT = "absent"    # no, it does not
+    UNKNOWN = "unknown"  # the patient does not know / does not remember
+
+
 class FactStatus(str, Enum):
     UNCONFIRMED = "unconfirmed"
     CONFIRMED = "confirmed"
@@ -46,6 +55,7 @@ class Fact(BaseModel):
     status: FactStatus
     timestamp: str
     supersedes: Optional[str] = None
+    polarity: Polarity = Polarity.PRESENT
     # Required when source == ASKED_AND_DENIED: the transcript question
     # event that establishes this was actually asked.
     question_event_id: Optional[str] = None

@@ -12,7 +12,7 @@ uncertain_answer_scenario = EvalScenario(
                     "args": {
                         "field": "chief_complaint",
                         "value": "persistent cough",
-                        "source": "patient_reported",
+                        "polarity": "present",
                         "evidence": "I've had a cough for a while now",
                         "confidence": 0.9,
                     },
@@ -29,7 +29,7 @@ uncertain_answer_scenario = EvalScenario(
                     "args": {
                         "field": "onset",
                         "value": "patient does not remember when it started",
-                        "source": "uncertain",
+                        "polarity": "unknown",
                         "evidence": "I don't remember exactly when it started",
                         "confidence": 0.85,
                     },

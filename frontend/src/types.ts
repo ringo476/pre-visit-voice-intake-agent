@@ -4,6 +4,8 @@
 
 export type Source = "patient_reported" | "asked_and_denied" | "uncertain" | "document_sourced" | "inferred" | "not_asked";
 
+export type Polarity = "present" | "absent" | "unknown";
+
 export interface Fact {
   id: string;
   field: string;
@@ -14,6 +16,7 @@ export interface Fact {
   status: "unconfirmed" | "confirmed" | "corrected";
   timestamp: string;
   supersedes?: string | null;
+  polarity?: Polarity;
   question_event_id?: string | null;
 }
 

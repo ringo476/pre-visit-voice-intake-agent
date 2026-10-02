@@ -19,7 +19,7 @@ document_upload_scenario = EvalScenario(
                     "args": {
                         "field": "medications_tried",
                         "value": "Albuterol inhaler 90mcg, 2 puffs as needed for wheeze",
-                        "source": "document_sourced",
+                        "polarity": "present",
                         "evidence": "Albuterol inhaler 90mcg, 2 puffs as needed for wheeze",
                         "confidence": 0.95,
                     },

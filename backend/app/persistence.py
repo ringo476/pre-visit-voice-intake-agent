@@ -25,7 +25,7 @@ from app.agent.session import AssistanceRequest, SessionState
 from app.db import Base, get_session_factory
 from app.protocol.registry import get_protocol
 from app.schemas.document import UploadedDocument
-from app.schemas.intake_record import Fact, FactStatus, IntakeRecord, QuestionEvent, SafetyEvaluation, Source, TranscriptTurn
+from app.schemas.intake_record import Fact, FactStatus, IntakeRecord, Polarity, QuestionEvent, SafetyEvaluation, Source, TranscriptTurn
 
 UNCLASSIFIED_PROTOCOL_ID = "unclassified"
 
@@ -73,6 +73,7 @@ class FactRow(Base):
     timestamp: Mapped[str] = mapped_column(String)
     supersedes: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     question_event_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    polarity: Mapped[str] = mapped_column(String, default="present")
 
 
 class TranscriptTurnRow(Base):
@@ -175,6 +176,7 @@ async def save_session(session: SessionState) -> None:
                 timestamp=f.timestamp,
                 supersedes=f.supersedes,
                 question_event_id=f.question_event_id,
+                polarity=f.polarity.value,
             )
             for f in session.record.facts
         )
@@ -273,6 +275,7 @@ async def load_session(session_id: str) -> Optional[SessionState]:
                 timestamp=f.timestamp,
                 supersedes=f.supersedes,
                 question_event_id=f.question_event_id,
+                polarity=Polarity(f.polarity or "present"),
             )
             for f in facts
         ],

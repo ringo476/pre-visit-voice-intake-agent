@@ -7,7 +7,7 @@ correction_scenario = EvalScenario(
         ScenarioTurn(
             patient_utterance="This cough started last Monday, so about 10 days ago.",
             tool_calls=[
-                {"name": "update_intake_record", "args": {"field": "onset", "value": "approximately 10 days ago", "source": "patient_reported", "evidence": "started last Monday, so about 10 days ago", "confidence": 0.9}},
+                {"name": "update_intake_record", "args": {"field": "onset", "value": "approximately 10 days ago", "polarity": "present", "evidence": "started last Monday, so about 10 days ago", "confidence": 0.9}},
             ],
             final_text="Got it. Has it been getting better or worse?",
         ),

@@ -1,11 +1,12 @@
 import pytest
 
-from app.schemas.intake_record import QuestionEvent, Source, TranscriptTurn
+from app.schemas.intake_record import Polarity, QuestionEvent, Source, TranscriptTurn
 from app.schemas.protocol_config import ProtocolConfig, ProtocolField
 from app.state_engine import (
     ProvenanceViolationError,
     apply_fact,
     create_empty_record,
+    derive_polarity,
     evidence_follows_question,
     evidence_in_patient_speech,
     evidence_in_text,
@@ -272,3 +273,38 @@ def test_any_correction_becomes_patient_reported_even_from_a_document_value():
     record = apply_fact(create_empty_record("s1", "p"), "medications_tried", "albuterol", Source.DOCUMENT_SOURCED, "Albuterol 90mcg", 0.9, [])
     record = record_correction(record, "medications_tried", "I stopped it last year", "I stopped it last year", 0.9)
     assert get_current_fact(record, "medications_tried").source == Source.PATIENT_REPORTED
+
+
+def test_derive_polarity_from_the_source_or_the_wording_when_none_is_given():
+    assert derive_polarity(Source.ASKED_AND_DENIED, "anything") == Polarity.ABSENT
+    assert derive_polarity(Source.UNCERTAIN, "anything") == Polarity.UNKNOWN
+    assert derive_polarity(Source.PATIENT_REPORTED, "no") == Polarity.ABSENT
+    assert derive_polarity(Source.PATIENT_REPORTED, "two weeks ago") == Polarity.PRESENT
+
+
+def test_a_stated_polarity_is_kept_whatever_the_value_looks_like():
+    record = apply_fact(create_empty_record("s1", "p"), "fever", "not at all", Source.PATIENT_REPORTED, "not at all", 0.9, [], polarity=Polarity.ABSENT)
+    assert get_current_fact(record, "fever").polarity == Polarity.ABSENT
+
+
+def _protocol_dependent():
+    return ProtocolConfig(
+        protocol_id="p",
+        name="P",
+        keywords=[],
+        fields=[
+            ProtocolField(field="fever", label="Fever", category="c", required=True),
+            ProtocolField(field="max_temperature", label="Max temp", category="c", required=False, required_if="fever"),
+        ],
+    )
+
+
+def test_follow_ups_activate_from_the_stored_polarity_not_the_wording_of_the_value():
+    protocol = _protocol_dependent()
+    present = apply_fact(create_empty_record("s1", "p"), "fever", "I felt hot", Source.PATIENT_REPORTED, "I felt hot", 0.9, [], polarity=Polarity.PRESENT)
+    absent_odd_wording = apply_fact(create_empty_record("s1", "p"), "fever", "not at all", Source.PATIENT_REPORTED, "not at all", 0.9, [], polarity=Polarity.ABSENT)
+    unknown = apply_fact(create_empty_record("s1", "p"), "fever", "who knows", Source.PATIENT_REPORTED, "who knows", 0.9, [], polarity=Polarity.UNKNOWN)
+
+    assert [m.field for m in get_missing_fields(present, protocol)] == ["max_temperature"]
+    assert get_missing_fields(absent_odd_wording, protocol) == []   # "not at all" no longer slips through
+    assert get_missing_fields(unknown, protocol) == []              # not knowing is not a yes

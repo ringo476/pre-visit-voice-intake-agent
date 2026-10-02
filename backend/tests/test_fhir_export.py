@@ -74,3 +74,25 @@ def test_an_uncertain_allergy_answer_does_not_create_an_allergy_record():
     bundle = generate_fhir_export(record, PROTOCOL)
 
     assert not [e for e in bundle["entry"] if e["resource"]["resourceType"] == "AllergyIntolerance"]
+
+
+def test_a_medication_the_patient_volunteered_they_do_not_take_is_marked_not_taken():
+    from app.schemas.intake_record import Polarity
+
+    record = create_empty_record("s1", PROTOCOL.protocol_id)
+    record = apply_fact(record, "medications_tried", "no", "patient_reported", "I take nothing", 0.9, [], polarity=Polarity.ABSENT)
+
+    bundle = generate_fhir_export(record, PROTOCOL)
+
+    assert find_resource(bundle, "MedicationStatement")["status"] == "not-taken"
+
+
+def test_a_volunteered_dont_know_about_a_medication_creates_no_medication_record():
+    from app.schemas.intake_record import Polarity
+
+    record = create_empty_record("s1", PROTOCOL.protocol_id)
+    record = apply_fact(record, "medications_tried", "patient does not know", "patient_reported", "not sure what I take", 0.8, [], polarity=Polarity.UNKNOWN)
+
+    bundle = generate_fhir_export(record, PROTOCOL)
+
+    assert not [e for e in bundle["entry"] if e["resource"]["resourceType"] == "MedicationStatement"]

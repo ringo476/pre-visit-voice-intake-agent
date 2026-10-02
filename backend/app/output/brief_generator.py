@@ -4,7 +4,7 @@ against: every line traces directly to one current Fact."""
 
 from dataclasses import dataclass, field
 
-from app.schemas.intake_record import Fact, IntakeRecord, Source
+from app.schemas.intake_record import Fact, IntakeRecord, Source, Polarity
 from app.schemas.protocol_config import ProtocolConfig
 from app.state_engine import get_current_facts, get_missing_fields
 
@@ -33,6 +33,8 @@ def _describe_fact(label: str, fact: Fact) -> str:
     """Renders one fact into a provenance-labeled sentence. Critically,
     NOT_ASKED never reaches here (callers skip it), so absence of
     information can never render as a denial."""
+    if fact.polarity == Polarity.UNKNOWN and fact.source != Source.UNCERTAIN:
+        return f"Patient is unsure about {label.lower()}."
     if fact.source == Source.PATIENT_REPORTED:
         return f"Patient reports {label.lower()}: {fact.value}."
     if fact.source == Source.ASKED_AND_DENIED:

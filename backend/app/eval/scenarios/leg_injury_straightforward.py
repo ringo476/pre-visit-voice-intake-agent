@@ -12,17 +12,17 @@ leg_injury_straightforward_scenario = EvalScenario(
         ScenarioTurn(
             patient_utterance="I twisted my ankle yesterday playing basketball and it's pretty swollen.",
             tool_calls=[
-                {"name": "update_intake_record", "args": {"field": "chief_complaint", "value": "twisted ankle", "source": "patient_reported", "evidence": "I twisted my ankle yesterday playing basketball", "confidence": 0.95}},
-                {"name": "update_intake_record", "args": {"field": "onset", "value": "yesterday", "source": "patient_reported", "evidence": "yesterday", "confidence": 0.9}},
-                {"name": "update_intake_record", "args": {"field": "mechanism_of_injury", "value": "twisted while playing basketball", "source": "patient_reported", "evidence": "twisted my ankle yesterday playing basketball", "confidence": 0.9}},
-                {"name": "update_intake_record", "args": {"field": "swelling", "value": "present", "source": "patient_reported", "evidence": "it's pretty swollen", "confidence": 0.9}},
+                {"name": "update_intake_record", "args": {"field": "chief_complaint", "value": "twisted ankle", "polarity": "present", "evidence": "I twisted my ankle yesterday playing basketball", "confidence": 0.95}},
+                {"name": "update_intake_record", "args": {"field": "onset", "value": "yesterday", "polarity": "present", "evidence": "yesterday", "confidence": 0.9}},
+                {"name": "update_intake_record", "args": {"field": "mechanism_of_injury", "value": "twisted while playing basketball", "polarity": "present", "evidence": "twisted my ankle yesterday playing basketball", "confidence": 0.9}},
+                {"name": "update_intake_record", "args": {"field": "swelling", "value": "present", "polarity": "present", "evidence": "it's pretty swollen", "confidence": 0.9}},
             ],
             final_text="Sorry to hear that. Can you still put weight on it and walk?",
         ),
         ScenarioTurn(
             patient_utterance="Yeah, it hurts but I can walk on it okay.",
             tool_calls=[
-                {"name": "update_intake_record", "args": {"field": "weight_bearing", "value": "able to bear weight, painful", "source": "patient_reported", "evidence": "I can walk on it okay", "confidence": 0.9}},
+                {"name": "update_intake_record", "args": {"field": "weight_bearing", "value": "able to bear weight, painful", "polarity": "present", "evidence": "I can walk on it okay", "confidence": 0.9}},
                 {"name": "get_next_intake_question", "args": {}},
             ],
             final_text="Good, that's reassuring. Any redness or warmth around the ankle?",

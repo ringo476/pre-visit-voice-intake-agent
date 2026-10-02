@@ -1,4 +1,5 @@
 import json
+import re
 import os
 from pathlib import Path
 
@@ -139,7 +140,7 @@ class _TwoTurnDenialLLM:
         if self.phase == 3:
             field = self.session.question_events[0].field
             return tool_call_message(
-                [{"name": "update_intake_record", "args": {"field": field, "value": "false", "source": "asked_and_denied", "evidence": "No, not at all", "confidence": 0.9}}]
+                [{"name": "update_intake_record", "args": {"field": field, "polarity": "absent", "evidence": "No, not at all", "confidence": 0.9}}]
             )
         return final_message("Understood.")
 
@@ -160,32 +161,6 @@ def test_denial_is_recorded_on_the_turn_after_the_question_was_spoken():
     fact = session.record.facts[0]
     assert fact.source.value == "asked_and_denied"
     assert fact.question_event_id == event.id
-
-
-def test_denial_in_the_same_turn_as_the_question_is_rejected():
-    """The old behaviour: look up a question and immediately file a denial
-    for it before the patient has said anything. The question hasn't been
-    spoken yet, so there is nothing for the denial to answer."""
-    session = create_session("s1", PROTOCOL)
-
-    class SameTurnLLM:
-        def __init__(self):
-            self.n = 0
-
-        def invoke(self, messages):
-            self.n += 1
-            if self.n == 1:
-                return tool_call_message([{"name": "get_next_intake_question", "args": {}}])
-            if self.n == 2:
-                field = session.question_events[0].field
-                return tool_call_message(
-                    [{"name": "update_intake_record", "args": {"field": field, "value": "false", "source": "asked_and_denied", "evidence": "No, not at all", "confidence": 0.9}}]
-                )
-            return final_message("Understood.")
-
-    run_agent_turn(session, "No, not at all.", llm=SameTurnLLM())
-
-    assert session.record.facts == []
 
 
 def test_only_the_question_actually_asked_this_turn_is_marked_as_spoken():
@@ -247,13 +222,14 @@ class _FakeVerifier:
 
     def invoke(self, messages):
         self.calls += 1
-        return AIMessage(content=self.verdict)
+        n = len(re.findall(r"(?m)^Claim \d+$", messages[0].content))
+        return AIMessage(content="\n".join(f"{i}: {self.verdict}" for i in range(1, n + 1)))
 
 
 def test_a_denial_the_verifier_rejects_is_not_recorded_and_the_field_stays_open():
     session = create_session("s1", PROTOCOL)
     llm = _TwoTurnDenialLLM(session)
-    verifier = _FakeVerifier("OTHER")
+    verifier = _FakeVerifier("CONTRADICTED")
 
     run_agent_turn(session, "hello", llm=llm, verifier_llm=verifier)
     run_agent_turn(session, "No, not at all.", llm=llm, verifier_llm=verifier)
@@ -269,9 +245,34 @@ def test_a_denial_the_verifier_rejects_is_not_recorded_and_the_field_stays_open(
 def test_a_denial_the_verifier_confirms_is_recorded():
     session = create_session("s1", PROTOCOL)
     llm = _TwoTurnDenialLLM(session)
-    verifier = _FakeVerifier("NEGATIVE")
+    verifier = _FakeVerifier("SUPPORTED")
 
     run_agent_turn(session, "hello", llm=llm, verifier_llm=verifier)
     run_agent_turn(session, "No, not at all.", llm=llm, verifier_llm=verifier)
 
     assert [f.source.value for f in session.record.facts] == ["asked_and_denied"]
+
+
+def test_a_no_in_the_same_turn_the_question_was_looked_up_does_not_earn_asked_and_denied():
+    """Looking a question up is not asking it. The patient has not heard it yet, so
+    a no recorded in that same turn is honest but is not an answer to a question."""
+    session = create_session("s1", PROTOCOL)
+
+    class SameTurnLLM:
+        def __init__(self):
+            self.n = 0
+
+        def invoke(self, messages):
+            self.n += 1
+            if self.n == 1:
+                return tool_call_message([{"name": "get_next_intake_question", "args": {}}])
+            if self.n == 2:
+                field = session.question_events[0].field
+                return tool_call_message(
+                    [{"name": "update_intake_record", "args": {"field": field, "polarity": "absent", "evidence": "No, not at all", "confidence": 0.9}}]
+                )
+            return final_message("Understood.")
+
+    run_agent_turn(session, "No, not at all.", llm=SameTurnLLM())
+
+    assert [f.source.value for f in session.record.facts] == ["patient_reported"]

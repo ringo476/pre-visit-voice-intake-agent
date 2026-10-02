@@ -10,32 +10,40 @@ audit at a glance."""
 import copy
 from typing import Optional
 
-SOURCE_ENUM = ["patient_reported", "asked_and_denied", "uncertain", "document_sourced", "inferred", "not_asked"]
+POLARITY_ENUM = ["present", "absent", "unknown"]
 
 TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "update_intake_record",
         "description": (
-            "Record one structured fact extracted from what the patient just said. Always include the "
-            "patient's own words as the evidence quote."
+            "Record one structured fact taken from what the patient just said. Say which topic it is about, "
+            "which direction the patient's answer goes (present, absent or unknown), and quote their exact "
+            "words. The system works out where the fact came from; you do not label it."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "field": {"type": "string", "description": "The protocol field this fact is about."},
-                "value": {"type": "string", "description": "The extracted value, in plain text."},
-                "source": {
+                "field": {"type": "string", "description": "The checklist topic this fact is about."},
+                "polarity": {
                     "type": "string",
-                    "enum": SOURCE_ENUM,
-                    "description": "Where this fact came from. Use asked_and_denied only when the patient said no in direct answer to a question you asked about this exact field. Use uncertain only when, in direct answer to that question, the patient said they do not know or do not remember. Use patient_reported for anything the patient said on their own: your quote must be their exact words. Use document_sourced only for text from a document they uploaded (quote it exactly). Use inferred only for the visit reason taken from the booking (chief_complaint).",
+                    "enum": POLARITY_ENUM,
+                    "description": (
+                        "The direction of the patient's answer about this topic. present: they say it is so "
+                        "(give the detail in value). absent: they say no, it is not. unknown: they say they do "
+                        "not know or do not remember."
+                    ),
+                },
+                "value": {
+                    "type": "string",
+                    "description": "The detail, in plain words, when polarity is present (for example '3 weeks ago'). Leave empty for absent or unknown.",
                 },
                 "evidence": {
                     "type": "string",
-                    "description": "The patient's own words backing this fact, verbatim. Required unless source is not_asked or inferred.",
+                    "description": "The patient's own words backing this, copied exactly from what they said. If it came from an uploaded document, copy the document's text exactly. Only the visit reason taken from the booking (chief_complaint) may be recorded without a quote.",
                 },
                 "confidence": {"type": "number", "description": "0 to 1 confidence in this extraction."},
             },
-            "required": ["field", "value", "source", "confidence"],
+            "required": ["field", "polarity", "confidence"],
         },
     },
     {
@@ -49,11 +57,16 @@ TOOL_DEFINITIONS: list[dict] = [
             "type": "object",
             "properties": {
                 "field": {"type": "string", "description": "The field being corrected."},
-                "new_value": {"type": "string", "description": "The corrected value."},
-                "evidence": {"type": "string", "description": "The patient's own words making the correction, verbatim."},
+                "polarity": {
+                    "type": "string",
+                    "enum": POLARITY_ENUM,
+                    "description": "The direction of the corrected answer: present, absent (no) or unknown (does not know).",
+                },
+                "new_value": {"type": "string", "description": "The corrected detail when polarity is present. Leave empty for absent or unknown."},
+                "evidence": {"type": "string", "description": "The patient's own words making the correction, copied exactly."},
                 "confidence": {"type": "number", "description": "0 to 1 confidence in this correction."},
             },
-            "required": ["field", "new_value", "evidence", "confidence"],
+            "required": ["field", "polarity", "evidence", "confidence"],
         },
     },
     {

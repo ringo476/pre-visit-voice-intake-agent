@@ -129,3 +129,19 @@ async def test_unclassified_session_has_no_protocol_after_reload(temp_db):
     await persistence.save_session(session)
     restored = await persistence.load_session(session.session_id)
     assert restored.protocol is None
+
+
+@pytest.mark.asyncio
+async def test_round_trip_preserves_the_direction_of_every_answer(temp_db):
+    from app.schemas.intake_record import Polarity
+
+    session = create_session(str(uuid.uuid4()), protocol=get_protocol("respiratory-intake"))
+    session.record = apply_fact(session.record, "onset", "2 weeks", Source.PATIENT_REPORTED, "two weeks", 0.9, [], polarity=Polarity.PRESENT)
+    session.record = apply_fact(session.record, "fever", "no", Source.PATIENT_REPORTED, "no fever", 0.9, [], polarity=Polarity.ABSENT)
+    session.record = apply_fact(session.record, "wheezing", "unsure", Source.PATIENT_REPORTED, "not sure", 0.8, [], polarity=Polarity.UNKNOWN)
+
+    await persistence.save_session(session)
+    restored = await persistence.load_session(session.session_id)
+
+    by_field = {f.field: f.polarity for f in restored.record.facts}
+    assert by_field == {"onset": Polarity.PRESENT, "fever": Polarity.ABSENT, "wheezing": Polarity.UNKNOWN}
