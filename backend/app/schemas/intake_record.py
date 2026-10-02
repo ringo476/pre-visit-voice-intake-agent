@@ -82,6 +82,10 @@ class QuestionEvent(BaseModel):
     # (an abandoned or superseded turn) must not count as "asked".
     asked_in_turn: Optional[int] = None
     spoken_text: Optional[str] = None
+    # Set only on a question that asks the patient to settle a disagreement: the
+    # id of the recorded fact the patient's new statement contradicted. The
+    # change is accepted only after this question was heard and answered.
+    confirms_fact_id: Optional[str] = None
 
 
 class TranscriptTurn(BaseModel):

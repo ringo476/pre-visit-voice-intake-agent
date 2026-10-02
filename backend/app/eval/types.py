@@ -30,6 +30,9 @@ class ScenarioExpectations:
     fields_should_remain_missing: list[str] = field(default_factory=list)
     expect_safety_trigger: Optional[bool] = None
     expect_correction: Optional[bool] = None
+    # Whether Ava asked the patient "which is right?" about an answer that was contradicted, and
+    # that question was spoken, before the answer was changed.
+    expect_confirmation_question: Optional[bool] = None
     # A field that must end up recorded with source document_sourced, proving document provenance was preserved.
     expect_document_sourced_field: Optional[str] = None
 

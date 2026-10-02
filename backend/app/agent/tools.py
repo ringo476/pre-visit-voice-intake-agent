@@ -32,6 +32,7 @@ from app.schemas.tool_schemas import (
 from app.state_engine import (
     ProvenanceViolationError,
     apply_fact,
+    classify_change,
     derive_polarity,
     evidence_follows_question,
     evidence_in_patient_speech,
@@ -39,6 +40,8 @@ from app.state_engine import (
     evidence_in_text,
     evidence_match_score,
     find_asked_event,
+    find_confirmation_event,
+    get_current_fact,
     get_current_facts,
     get_missing_fields,
     looks_like_denial,
@@ -104,6 +107,7 @@ class _Resolved:
     source: Source                    # worked out by the server, never chosen by the model
     question_event_id: Optional[str]
     claim: Optional[Claim]            # None when there is nothing to verify (the booking reason)
+    supersedes_current: bool = False  # replaces the field's current answer (kept in history) instead of sitting beside it
 
 
 def create_tool_handlers(
@@ -112,6 +116,10 @@ def create_tool_handlers(
     verifier_llm: Optional[BaseChatModel] = None,
 ) -> _Handlers:
     verdict_cache: dict[str, object] = {}
+    # Handlers are built once per turn. A "which is right?" question asked in this
+    # turn is remembered by the fact it concerns, so the prepare pass and the real
+    # call (or a retry) do not log it twice.
+    confirm_events: dict[str, QuestionEvent] = {}
 
     def _label_for(field: str) -> str:
         if session.protocol is not None:
@@ -196,6 +204,38 @@ def create_tool_handlers(
             logger.info("quote not found", extra={"session_id": session.session_id, "field": field})
             return _fail(f'Cannot record "{field}": the evidence quote was not found in {where}. Quote the exact words.')
 
+        last_patient_turn = max((i for i, t in enumerate(session.transcript) if t.speaker == "patient"), default=-1)
+
+        # Does the patient's statement meet an answer already on record? A repeat
+        # adds nothing, a detail or a settled doubt replaces the old answer, and a
+        # disagreement is not settled on one statement: the patient is asked which
+        # is right, and the change is accepted only after they have answered that
+        # question. (A claim quoted from a document is not the patient contradicting
+        # themselves, so it is left alone.)
+        supersedes_current = False
+        confirmation = None
+        current = get_current_fact(session.record, field) if document is None else None
+        if current is not None:
+            if current.source == Source.INFERRED:
+                supersedes_current = True  # the booking's guess, replaced by the patient's own words
+            else:
+                change = classify_change(current, polarity, value)
+                if change == "same":
+                    return _ok(
+                        {
+                            "recorded": False,
+                            "already_recorded": True,
+                            "message": f'"{field}" already has this answer on record; nothing to change.',
+                        }
+                    )
+                if change == "conflict":
+                    confirmation = find_confirmation_event(
+                        session.question_events, current.id, before_turn=last_patient_turn
+                    )
+                    if confirmation is None or not evidence_follows_question(session.transcript, confirmation, evidence):
+                        return _ask_which_is_right(field, current, polarity, value)
+                supersedes_current = True
+
         # Which label does that earn? Worked out here, from what actually happened.
         source = Source.PATIENT_REPORTED
         event = None
@@ -205,9 +245,6 @@ def create_tool_handlers(
             said = document.text[:2000]
         else:
             if polarity != Polarity.PRESENT and not correction:
-                last_patient_turn = max(
-                    (i for i, t in enumerate(session.transcript) if t.speaker == "patient"), default=-1
-                )
                 candidate = find_asked_event(session.question_events, field, before_turn=last_patient_turn)
                 if candidate is not None and evidence_follows_question(session.transcript, candidate, evidence):
                     event = candidate
@@ -219,6 +256,13 @@ def create_tool_handlers(
                 said = patient_turns_containing(session.transcript, evidence)
                 spoken = find_asked_event(session.question_events, field, before_turn=len(session.transcript))
                 asked_text = (spoken.spoken_text or spoken.question_text) if spoken else None
+            if confirmation is not None:
+                # The patient is answering "which is right?", so that is what the
+                # independent reader is shown: a bare "the second one" or "yes"
+                # means nothing without it.
+                source, event = Source.PATIENT_REPORTED, None
+                said = patient_reply_after(session.transcript, confirmation)
+                asked_text = confirmation.spoken_text or confirmation.question_text
 
         claim = Claim(
             topic=_label_for(field),
@@ -228,7 +272,56 @@ def create_tool_handlers(
             asked=asked_text,
             from_document=document is not None,
         )
-        return _Resolved(field, polarity, value, evidence, a.confidence, source, event.id if event else None, claim)
+        return _Resolved(
+            field, polarity, value, evidence, a.confidence, source, event.id if event else None, claim, supersedes_current
+        )
+
+    def _answer_text(polarity: Polarity, value: str) -> str:
+        if polarity == Polarity.ABSENT:
+            return "no"
+        if polarity == Polarity.UNKNOWN:
+            return "not sure"
+        return "yes" if value.strip().lower() in ("yes", "") else f"yes, {value}"
+
+    def _ask_which_is_right(field: str, current, polarity: Polarity, value: str) -> ToolResult:
+        """The patient's statement contradicts what is on record. Nothing is
+        written. A question is logged for the field, tied to the exact fact in
+        dispute, so that Ava asking it (and the patient answering it) is what
+        later allows the change; and the model is told what to ask."""
+        label = _label_for(field)
+        event = confirm_events.get(current.id)
+        if event is None:
+            event = QuestionEvent(
+                id=str(uuid.uuid4()),
+                field=field,
+                question_text=f"Confirm: {label}",
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                confirms_fact_id=current.id,
+            )
+            session.question_events.append(event)
+            confirm_events[current.id] = event
+        on_record, just_said = _answer_text(current.polarity, current.value), _answer_text(polarity, value)
+        logger.info(
+            "new statement contradicts the record, asking the patient which is right",
+            extra={"session_id": session.session_id, "field": field, "on_record": current.polarity.value, "new": polarity.value},
+        )
+        return _ok(
+            {
+                "recorded": False,
+                "needs_confirmation": True,
+                "field": field,
+                "on_record": on_record,
+                "just_said": just_said,
+                "message": (
+                    f'Nothing was changed. On "{label}" the record says: {on_record}. What the patient just said '
+                    f"reads as: {just_said}. One statement is not enough to overwrite an answer they gave. Ask the "
+                    f"patient which is right, in one short question that names both, for example: "
+                    f'"Just to be sure about {label.lower()}: earlier I noted {on_record}, and just now it sounded like '
+                    f'{just_said}. Which is right?" When they answer, record their answer with '
+                    f"record_patient_correction. If they keep the earlier answer, record nothing."
+                ),
+            }
+        )
 
     def _cache_key(name: str, raw_args: dict) -> str:
         return name + json.dumps(raw_args, sort_keys=True, default=str)
@@ -303,17 +396,29 @@ def create_tool_handlers(
         if rejected:
             return rejected
         try:
-            session.record = apply_fact(
-                session.record,
-                resolved.field,
-                resolved.value,
-                resolved.source,
-                resolved.evidence,
-                resolved.confidence,
-                session.question_events,
-                question_event_id=resolved.question_event_id,
-                polarity=resolved.polarity,
-            )
+            if resolved.supersedes_current:
+                # The field already had an answer. The new one replaces it as the
+                # current answer and links back to it; the old one stays in history.
+                session.record = record_correction(
+                    session.record,
+                    resolved.field,
+                    resolved.value,
+                    resolved.evidence or "",
+                    resolved.confidence,
+                    polarity=resolved.polarity,
+                )
+            else:
+                session.record = apply_fact(
+                    session.record,
+                    resolved.field,
+                    resolved.value,
+                    resolved.source,
+                    resolved.evidence,
+                    resolved.confidence,
+                    session.question_events,
+                    question_event_id=resolved.question_event_id,
+                    polarity=resolved.polarity,
+                )
         except ProvenanceViolationError as e:
             return _fail(str(e))
 

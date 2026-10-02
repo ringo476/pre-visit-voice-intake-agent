@@ -95,6 +95,10 @@ def run_scenario(scenario: EvalScenario) -> ScenarioResult:
     if scenario.expectations.expect_correction is not None:
         checks.append(ScenarioCheck("correction-recorded", has_correction == scenario.expectations.expect_correction))
 
+    if scenario.expectations.expect_confirmation_question is not None:
+        asked = any(e.confirms_fact_id and e.asked_in_turn is not None for e in session.question_events)
+        checks.append(ScenarioCheck("confirmation-asked", asked == scenario.expectations.expect_confirmation_question))
+
     if scenario.expectations.expect_document_sourced_field:
         f = scenario.expectations.expect_document_sourced_field
         fact = current.get(f)

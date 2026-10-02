@@ -278,12 +278,14 @@ def test_record_patient_correction_supersedes_original():
     handlers = create_tool_handlers(session)
 
     first = handlers["update_intake_record"](
-        {"field": "onset", "value": "10 days ago", "source": "patient_reported", "evidence": "It started last Monday", "confidence": 0.9}
+        {"field": "onset", "value": "last Monday", "source": "patient_reported", "evidence": "It started last Monday", "confidence": 0.9}
     )
     fact_id = first.data["fact_id"]
 
+    # Adding a detail to the same answer replaces it without a question. (A value that
+    # disagrees is a different case; see test_conflicts.py.)
     corrected = handlers["record_patient_correction"](
-        {"field": "onset", "new_value": "2 weeks ago", "evidence": "Actually, two weeks ago", "confidence": 0.92}
+        {"field": "onset", "new_value": "last Monday, about two weeks ago", "evidence": "Actually, two weeks ago", "confidence": 0.92}
     )
     assert corrected.ok is True
     assert len(session.record.facts) == 2
@@ -300,15 +302,15 @@ def test_record_patient_correction_works_without_the_model_ever_seeing_a_fact_id
     handlers = create_tool_handlers(session)
 
     handlers["update_intake_record"](
-        {"field": "onset", "value": "10 days ago", "source": "patient_reported", "evidence": "It started last Monday", "confidence": 0.9}
+        {"field": "onset", "value": "last Monday", "source": "patient_reported", "evidence": "It started last Monday", "confidence": 0.9}
     )
 
     corrected = handlers["record_patient_correction"](
-        {"field": "onset", "new_value": "2 weeks ago", "evidence": "Actually, two weeks ago", "confidence": 0.92}
+        {"field": "onset", "new_value": "last Monday, about two weeks ago", "evidence": "Actually, two weeks ago", "confidence": 0.92}
     )
     assert corrected.ok is True
     current = next(f for f in session.record.facts if f.status.value == "corrected")
-    assert current.value == "2 weeks ago"
+    assert current.value == "last Monday, about two weeks ago"
 
 
 def test_record_patient_correction_rejects_field_never_recorded():
@@ -512,21 +514,6 @@ def test_a_correction_must_quote_something_the_patient_really_said():
 
     assert result.ok is False
     assert "not found in anything the patient has said" in result.error
-
-
-def test_a_correction_to_a_no_goes_through_the_verifier_too():
-    verifier = _FakeVerifier("OTHER")
-    session = create_session("s1", PROTOCOL)
-    session.transcript.append(_turn(0, "patient", "I had a fever. Actually, hold on, yes I definitely had one."))
-    handlers = create_tool_handlers(session, verifier_llm=verifier)
-    handlers["update_intake_record"](_patient_reported("fever", "yes", "I had a fever"))
-
-    result = handlers["record_patient_correction"](
-        {"field": "fever", "new_value": "no", "evidence": "yes I definitely had one", "confidence": 0.9}
-    )
-
-    assert result.ok is False
-
 
 
 # ---------------------------------------------------------------------------
@@ -878,33 +865,22 @@ def test_a_failed_batch_check_refuses_every_fact_in_it(monkeypatch):
 
 
 def test_a_verdict_is_not_reused_for_a_second_identical_request():
-    verifier = _FakeVerifier("SUPPORTED")
+    verifier = _FakeVerifier("UNRELATED")  # refused each time, so the second request is a real second request
     session, handlers = _with_patient_words("About two weeks ago.", verifier)
     call = {"name": "update_intake_record", "args": _present("onset", "two weeks", "About two weeks ago"), "id": "1"}
 
     handlers.prepare([call])
-    handlers["update_intake_record"](call["args"])
-    handlers["update_intake_record"](call["args"])  # the same request again, outside any prepare
+    first = handlers["update_intake_record"](call["args"])
+    second = handlers["update_intake_record"](call["args"])  # the same request again, outside any prepare
 
+    assert first.ok is False and second.ok is False
     assert len(verifier.prompts) == 2  # one batched, one fresh
 
 
 # ---------------------------------------------------------------------------
 # Corrections follow the same rules
+# (a correction that disagrees with the record is covered in test_conflicts.py)
 # ---------------------------------------------------------------------------
-
-def test_a_correction_to_a_no_is_checked_by_the_verifier_too():
-    verifier = _FakeVerifier("CONTRADICTED")
-    session = create_session("s1", PROTOCOL)
-    session.transcript.append(_turn(0, "patient", "I had a fever. Actually, hold on, yes I definitely had one."))
-    handlers = create_tool_handlers(session, verifier_llm=verifier)
-    handlers["update_intake_record"](_present("fever", "yes", "I had a fever"))
-
-    result = handlers["record_patient_correction"](
-        {"field": "fever", "polarity": "absent", "evidence": "yes I definitely had one", "confidence": 0.9}
-    )
-
-    assert result.ok is False
 
 
 def test_a_small_slip_in_copying_the_quote_is_accepted():

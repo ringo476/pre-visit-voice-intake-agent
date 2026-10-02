@@ -58,6 +58,7 @@ async def test_round_trip_preserves_facts_transcript_and_protocol(temp_db):
 async def test_round_trip_preserves_safety_log_questions_documents_and_assistance(temp_db):
     session = create_session(str(uuid.uuid4()), protocol=get_protocol("respiratory-intake"))
     session.question_events.append(QuestionEvent(id="q1", field="fever", question_text="Any fever?", timestamp="t", asked_in_turn=3, spoken_text="Have you had a fever?"))
+    session.question_events.append(QuestionEvent(id="q2", field="fever", question_text="Confirm: Fever", timestamp="u", confirms_fact_id="fact-9"))
     session.safety_log.append(SafetyEvaluation(id="s1", fact_id="f1", triggered=True, rule_id="severe_breathing_difficulty", action="emergency_escalation", timestamp="t"))
     session.documents.append(UploadedDocument(id="d1", filename="rx.pdf", mime_type="application/pdf", text="albuterol", uploaded_at="t"))
     session.assistance_requests.append(AssistanceRequest(id="a1", reason="patient asked for a human", timestamp="t"))
@@ -69,6 +70,8 @@ async def test_round_trip_preserves_safety_log_questions_documents_and_assistanc
     assert restored.question_events[0].field == "fever"
     assert restored.question_events[0].asked_in_turn == 3
     assert restored.question_events[0].spoken_text == "Have you had a fever?"
+    assert restored.question_events[0].confirms_fact_id is None
+    assert restored.question_events[1].confirms_fact_id == "fact-9"
     assert restored.safety_log[0].triggered is True
     assert restored.documents[0].filename == "rx.pdf"
     assert restored.assistance_requests[0].reason == "patient asked for a human"

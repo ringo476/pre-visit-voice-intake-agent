@@ -277,13 +277,61 @@ def get_current_facts(record: IntakeRecord) -> dict[str, Fact]:
         if fact.id in superseded:
             continue
         existing = current.get(fact.field)
-        if existing is None or fact.timestamp > existing.timestamp:
+        # Facts are appended in the order they were recorded, so on a tie (two
+        # writes landing in the same clock tick) the later one is the current one.
+        if existing is None or fact.timestamp >= existing.timestamp:
             current[fact.field] = fact
     return current
 
 
 def get_current_fact(record: IntakeRecord, field: str) -> Optional[Fact]:
     return get_current_facts(record).get(field)
+
+
+_GENERIC_YES = {"yes", "yeah", "yep", "yup"}
+
+
+def classify_change(current: Fact, polarity: Polarity, value: str) -> str:
+    """How a new answer about a field that already has one relates to it.
+
+    "same"     - nothing new; recording it again would only add a duplicate.
+    "update"   - the new answer adds to or settles the old one, so it can replace
+                 it: a detail added to a yes ("fever" -> "fever since Tuesday"), or
+                 an answer where the patient had said they did not know.
+    "conflict" - it disagrees with an answer the patient gave: yes against no, a
+                 definite answer now being doubted, or a different value. A
+                 disagreement is never settled on one noisy statement; the
+                 patient is asked which is right."""
+    if current.polarity == Polarity.UNKNOWN:
+        return "same" if polarity == Polarity.UNKNOWN else "update"
+    if polarity != current.polarity:
+        return "conflict"
+    if polarity == Polarity.ABSENT:
+        return "same"
+
+    old, new = _normalize_for_match(current.value), _normalize_for_match(value)
+    if old == new or new in _GENERIC_YES:
+        return "same"
+    if not old or not new or old in _GENERIC_YES:
+        return "update"
+    if f" {old} " in f" {new} " or f" {new} " in f" {old} ":
+        return "update"
+    return "conflict"
+
+
+def find_confirmation_event(
+    question_events: list[QuestionEvent], fact_id: str, before_turn: int
+) -> Optional[QuestionEvent]:
+    """The most recent question that asked the patient to settle a disagreement
+    with the fact `fact_id`, and that was actually heard (stamped) in an agent
+    turn earlier than `before_turn`. Tied to the fact's id, so a confirmation
+    about an older version of the answer can never approve a change to this one."""
+    candidates = [
+        e
+        for e in question_events
+        if e.confirms_fact_id == fact_id and e.asked_in_turn is not None and e.asked_in_turn < before_turn
+    ]
+    return max(candidates, key=lambda e: e.asked_in_turn, default=None)
 
 
 class MissingField(BaseModel):

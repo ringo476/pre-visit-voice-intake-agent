@@ -108,6 +108,7 @@ class QuestionEventRow(Base):
     timestamp: Mapped[str] = mapped_column(String)
     asked_in_turn: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     spoken_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confirms_fact_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class DocumentRow(Base):
@@ -205,6 +206,7 @@ async def save_session(session: SessionState) -> None:
                 timestamp=q.timestamp,
                 asked_in_turn=q.asked_in_turn,
                 spoken_text=q.spoken_text,
+                confirms_fact_id=q.confirms_fact_id,
             )
             for q in session.question_events
         )
@@ -293,6 +295,7 @@ async def load_session(session_id: str) -> Optional[SessionState]:
                 timestamp=q.timestamp,
                 asked_in_turn=q.asked_in_turn,
                 spoken_text=q.spoken_text,
+                confirms_fact_id=q.confirms_fact_id,
             )
             for q in questions
         ],

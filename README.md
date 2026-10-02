@@ -63,7 +63,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
 | Tool | What it does |
 |---|---|
 | `update_intake_record` | Record one fact, with a verbatim evidence quote and a `source` (patient_reported / asked_and_denied / uncertain / document_sourced / inferred / not_asked) |
-| `record_patient_correction` | Correct an earlier fact without erasing it — appends a new version |
+| `record_patient_correction` | Correct an earlier fact without erasing it — appends a new version. A statement that *disagrees* with the recorded answer is not written on its own: the tool answers "needs confirmation", Ava asks the patient which is right, and the change is made only after they answer that question |
 | `check_safety_protocol` | Ask the deterministic safety engine to evaluate a concerning statement |
 | `get_next_intake_question` | Ask what's still missing per the protocol checklist, with RAG-suggested phrasing |
 | `retrieve_existing_patient_context` | Look up prior-chart context (RAG, synthetic demo data) |
@@ -87,7 +87,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
     output/         brief_generator.py, fhir_export.py
     eval/           types.py, scenarios/, runner.py — 7 synthetic scenarios through the real graph
     main.py         FastAPI app: REST + WebSocket
-  tests/            pytest — 258 tests, no credentials required
+  tests/            pytest — 292 tests, no credentials required
 /frontend           React + Vite: welcome screen, live 3-pane conversation view (+ document upload), completion/clinician view
 ```
 
@@ -106,7 +106,7 @@ orchestration directly, with a scripted stand-in for Gemini):**
 
 ```bash
 cd backend
-.venv\Scripts\python.exe -m pytest -q          # 258 tests
+.venv\Scripts\python.exe -m pytest -q          # 292 tests
 .venv\Scripts\python.exe -m app.eval.runner    # 7 synthetic scenarios through the real graph
 ```
 
@@ -131,13 +131,13 @@ Copy `backend/.env.example` to `backend/.env` and fill in:
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to a GCP service account JSON with Cloud Speech-to-Text, Cloud
   Text-to-Speech, and Cloud Vision enabled
 
-Without these: all 258 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
+Without these: all 292 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
 and the LangGraph tests/eval use a scripted fake model), and the frontend UI works and shows a clear
 connection/microphone error rather than crashing.
 
 ## What's verified vs. what isn't
 
-**Fully tested (258 automated tests, no external dependency):** state engine provenance rules, safety
+**Fully tested (292 automated tests, no external dependency):** state engine provenance rules, safety
 engine, RAG retrieval (real Chroma vector store), document extraction router (real PDF text extraction via
 a generated test PDF; OCR path exercised with an injected fake), the full LangGraph orchestration loop
 (including a genuine loop-guard/recursion test), output generation (brief + FHIR), and the 7-scenario eval
