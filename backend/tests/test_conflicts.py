@@ -304,6 +304,43 @@ def test_a_different_value_is_a_disagreement():
     assert len(session.record.facts) == 1
 
 
+def _temperature_104_on_record():
+    session = create_session("s1", PROTOCOL)
+    _say(session, "agent", "Have you had a fever?")
+    _say(session, "patient", "Yes, my temperature hit 104 yesterday.")
+    _say(session, "agent", "And how is it today?")
+    _say(session, "patient", "This morning it was 102 though.")
+    handlers = create_tool_handlers(session)
+    handlers["update_intake_record"](_yes("fever", "104", "my temperature hit 104 yesterday"))
+    return session
+
+
+def test_a_recorded_temperature_is_not_rewritten_by_a_number_from_elsewhere_in_the_conversation():
+    """The model can read the whole transcript, so it can find a real quote for a
+    different number. A plain update for the same field must not replace the 104."""
+    session = _temperature_104_on_record()
+
+    result = create_tool_handlers(session, verifier_llm=_Verifier("SUPPORTED"))["update_intake_record"](
+        _yes("fever", "102", "This morning it was 102")
+    )
+
+    assert result.data["needs_confirmation"] is True
+    assert get_current_facts(session.record)["fever"].value == "104"
+    assert len(session.record.facts) == 1
+
+
+@pytest.mark.parametrize("new_value", ["104.5", "104 and 102", "102"])
+def test_a_number_that_was_recorded_cannot_change_or_grow_without_asking(new_value):
+    session = _temperature_104_on_record()
+
+    result = create_tool_handlers(session, verifier_llm=_Verifier("SUPPORTED"))["update_intake_record"](
+        _yes("fever", new_value, "my temperature hit 104 yesterday")
+    )
+
+    assert result.data["needs_confirmation"] is True
+    assert get_current_facts(session.record)["fever"].value == "104"
+
+
 def test_the_patients_own_words_replace_the_booking_reason_without_a_question():
     session = create_session("s1", PROTOCOL, appointment_reason_text="persistent cough")
     handlers = create_tool_handlers(session)
@@ -392,6 +429,11 @@ def _fact(polarity: Polarity, value: str) -> Fact:
         (_fact(Polarity.PRESENT, "yes"), Polarity.PRESENT, "since Tuesday", "update"),
         (_fact(Polarity.PRESENT, "3 weeks"), Polarity.PRESENT, "5 days", "conflict"),
         (_fact(Polarity.PRESENT, "dry cough"), Polarity.PRESENT, "wet cough", "conflict"),
+        (_fact(Polarity.PRESENT, "104"), Polarity.PRESENT, "102", "conflict"),
+        (_fact(Polarity.PRESENT, "104"), Polarity.PRESENT, "104.5", "conflict"),
+        (_fact(Polarity.PRESENT, "104"), Polarity.PRESENT, "104 and 102", "conflict"),
+        (_fact(Polarity.PRESENT, "fever of 104 yesterday"), Polarity.PRESENT, "fever of 104 yesterday, again at night", "update"),
+        (_fact(Polarity.PRESENT, "about two weeks"), Polarity.PRESENT, "about two weeks, roughly 14 days", "update"),
         (_fact(Polarity.PRESENT, "fever"), Polarity.ABSENT, "no", "conflict"),
         (_fact(Polarity.ABSENT, "no"), Polarity.PRESENT, "fever", "conflict"),
         (_fact(Polarity.ABSENT, "no"), Polarity.ABSENT, "none", "same"),

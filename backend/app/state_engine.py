@@ -289,6 +289,7 @@ def get_current_fact(record: IntakeRecord, field: str) -> Optional[Fact]:
 
 
 _GENERIC_YES = {"yes", "yeah", "yep", "yup"}
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 
 def classify_change(current: Fact, polarity: Polarity, value: str) -> str:
@@ -314,6 +315,13 @@ def classify_change(current: Fact, polarity: Polarity, value: str) -> str:
         return "same"
     if not old or not new or old in _GENERIC_YES:
         return "update"
+    # A number the patient already gave (a temperature, a dose, a duration) may not
+    # change or grow on the strength of one statement: 104 becoming 102, 104.5 or
+    # "104 and 102" is a disagreement even though the old text is still inside the
+    # new. Adding a number to an answer that had none is still just added detail.
+    old_numbers = sorted(_NUMBER.findall(current.value))
+    if old_numbers and old_numbers != sorted(_NUMBER.findall(value)):
+        return "conflict"
     if f" {old} " in f" {new} " or f" {new} " in f" {old} ":
         return "update"
     return "conflict"
