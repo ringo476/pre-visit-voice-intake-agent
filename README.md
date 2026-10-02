@@ -82,7 +82,7 @@ The 8 tools the model can call — each a narrow RPC into exactly one backend mo
     output/         brief_generator.py, fhir_export.py
     eval/           types.py, scenarios/, runner.py — 7 synthetic scenarios through the real graph
     main.py         FastAPI app: REST + WebSocket
-  tests/            pytest — 220 tests, no credentials required
+  tests/            pytest — 243 tests, no credentials required
 /frontend           React + Vite: welcome screen, live 3-pane conversation view (+ document upload), completion/clinician view
 ```
 
@@ -101,7 +101,7 @@ orchestration directly, with a scripted stand-in for Gemini):**
 
 ```bash
 cd backend
-.venv\Scripts\python.exe -m pytest -q          # 220 tests
+.venv\Scripts\python.exe -m pytest -q          # 243 tests
 .venv\Scripts\python.exe -m app.eval.runner    # 7 synthetic scenarios through the real graph
 ```
 
@@ -126,13 +126,13 @@ Copy `backend/.env.example` to `backend/.env` and fill in:
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to a GCP service account JSON with Cloud Speech-to-Text, Cloud
   Text-to-Speech, and Cloud Vision enabled
 
-Without these: all 220 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
+Without these: all 243 tests and the eval suite still run (RAG falls back to an offline hashing embedding,
 and the LangGraph tests/eval use a scripted fake model), and the frontend UI works and shows a clear
 connection/microphone error rather than crashing.
 
 ## What's verified vs. what isn't
 
-**Fully tested (220 automated tests, no external dependency):** state engine provenance rules, safety
+**Fully tested (243 automated tests, no external dependency):** state engine provenance rules, safety
 engine, RAG retrieval (real Chroma vector store), document extraction router (real PDF text extraction via
 a generated test PDF; OCR path exercised with an injected fake), the full LangGraph orchestration loop
 (including a genuine loop-guard/recursion test), output generation (brief + FHIR), and the 7-scenario eval
@@ -150,7 +150,7 @@ Four layers, deliberately not resting on the model's judgment alone:
 
 1. **Conversational instructions** ([`app/agent/instructions.py`](backend/app/agent/instructions.py)) — never diagnose, one question at a time, acknowledge uncertainty, escalate rather than improvise.
 2. **Deterministic safety policy** ([`app/policy_engine.py`](backend/app/policy_engine.py), rules in [`rules.json`](backend/app/rules.json)) — plain keyword-rule evaluation that runs on *every* fact write, regardless of whether the model called `check_safety_protocol`.
-3. **Fact verification** ([`app/agent/tools.py`](backend/app/agent/tools.py), [`app/state_engine.py`](backend/app/state_engine.py), [`app/agent/answer_verifier.py`](backend/app/agent/answer_verifier.py)) — the model proposes a fact (the topic, the direction of the answer: present, absent or unknown, the detail, and the patient's exact words); it never chooses the label. The server checks the quote is really something the patient said (or text from an uploaded document), then works out the label itself: an absent or unknown answer to a question the server knows was really spoken earlier earns `asked_and_denied` / `uncertain`, a quote found in an uploaded document earns `document_sourced`, and anything else the patient said is `patient_reported`. Then a separate Gemini call reads the patient's words and every proposed fact from the turn, in one request, and each must come back `supported` (not `contradicted` or `unrelated`) or it is rejected. A verifier failure refuses the save rather than allowing it.
+3. **Fact verification** ([`app/agent/tools.py`](backend/app/agent/tools.py), [`app/state_engine.py`](backend/app/state_engine.py), [`app/agent/answer_verifier.py`](backend/app/agent/answer_verifier.py)) — the model proposes a fact (the topic, the direction of the answer: present, absent or unknown, the detail, and the patient's exact words); it never chooses the label. The server checks the quote is really something the patient said (or text from an uploaded document), allowing the small slips a model makes when copying but never a changed negation or number, then works out the label itself: an absent or unknown answer to a question the server knows was really spoken earlier earns `asked_and_denied` / `uncertain`, a quote found in an uploaded document earns `document_sourced`, and anything else the patient said is `patient_reported`. Then a separate Gemini call reads the patient's words and every proposed fact from the turn, in one request, and each must come back `supported` (not `contradicted` or `unrelated`) or it is rejected. A verifier failure refuses the save rather than allowing it.
 4. **Clinician review** — every generated brief carries "Generated from a patient conversation. Review and verify before clinical use."
 
 ### Checking the verifier against real Gemini

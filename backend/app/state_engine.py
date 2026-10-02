@@ -5,6 +5,8 @@ the reasoning model never touches this directly."""
 
 import re
 import uuid
+from collections import Counter
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -120,14 +122,68 @@ def patient_reply_after(transcript: list[TranscriptTurn], event: QuestionEvent) 
     return " ".join(t.text for t in transcript[event.asked_in_turn + 1 :] if t.speaker == "patient")
 
 
-def evidence_in_text(text: str, evidence: str) -> bool:
-    """True if `evidence` appears in `text` as whole words, ignoring case and
-    punctuation. Padding both sides means a bare "no" cannot count as found
-    inside "I know"."""
+# How closely a quote must resemble the words it claims to come from. A model
+# asked to copy a sentence often changes a word or drops one ("took" for
+# "take"), and speech-to-text can word things slightly differently, so an
+# exact-only match rejected genuine statements. The threshold is calibrated in
+# tests/test_quote_matching.py: it sits in the gap between the worst slip that
+# should be accepted and the best invented or paraphrased quote that must not be.
+QUOTE_MATCH_THRESHOLD = 0.88
+# A quote this short must match exactly. One changed letter in a three-word
+# quote can be a different word with a different meaning.
+MIN_FUZZY_WORDS = 4
+# Words that flip or change the meaning of a sentence. A near-match is never
+# allowed to add, drop or change one of these, or any number, because a
+# similarity score treats "I have no fever" and "I have a fever" as nearly
+# identical. ("t" is what remains of "can't" / "don't" once punctuation goes.)
+_MEANING_WORDS = {
+    "no", "not", "never", "none", "nothing", "nobody", "without", "neither", "nor", "cannot", "t",
+}
+
+
+def _critical_words(words: list[str]) -> Counter:
+    return Counter(w for w in words if w in _MEANING_WORDS or any(ch.isdigit() for ch in w))
+
+
+def evidence_match_score(text: str, evidence: str) -> float:
+    """How well `evidence` matches some stretch of `text`, from 0 to 1. A copy
+    of the words (ignoring case and punctuation) scores 1. Otherwise the quote
+    is compared with every stretch of the text of about its length, but only
+    stretches that have exactly the same negations and numbers are considered,
+    and quotes under MIN_FUZZY_WORDS words get no near-match at all."""
     needle = _normalize_for_match(evidence)
     if not needle:
-        return False
-    return f" {needle} " in f" {_normalize_for_match(text)} "
+        return 0.0
+    haystack = _normalize_for_match(text)
+    if f" {needle} " in f" {haystack} ":
+        return 1.0
+
+    quote = needle.split()
+    words = haystack.split()
+    if len(quote) < MIN_FUZZY_WORDS or not words:
+        return 0.0
+
+    wanted = _critical_words(quote)
+    matcher = SequenceMatcher(None, autojunk=False)
+    matcher.set_seq2(needle)
+    best = 0.0
+    for size in range(max(1, len(quote) - 2), len(quote) + 3):
+        for start in range(0, len(words) - size + 1):
+            window = words[start : start + size]
+            if _critical_words(window) != wanted:
+                continue
+            matcher.set_seq1(" ".join(window))
+            if matcher.real_quick_ratio() <= best or matcher.quick_ratio() <= best:
+                continue
+            best = max(best, matcher.ratio())
+    return best
+
+
+def evidence_in_text(text: str, evidence: str) -> bool:
+    """True if `evidence` is a copy of words in `text` (ignoring case and
+    punctuation, whole words only), or close enough to count as one (see
+    evidence_match_score)."""
+    return evidence_match_score(text, evidence) >= QUOTE_MATCH_THRESHOLD
 
 
 def evidence_in_patient_speech(transcript: list[TranscriptTurn], evidence: str) -> bool:

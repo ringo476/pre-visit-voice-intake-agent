@@ -905,3 +905,25 @@ def test_a_correction_to_a_no_is_checked_by_the_verifier_too():
     )
 
     assert result.ok is False
+
+
+def test_a_small_slip_in_copying_the_quote_is_accepted():
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "I do take my albuterol inhaler sometimes, mostly at night."))
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](_present("medications_tried", "albuterol inhaler, sometimes", "I do took my albuterol inhaler sometimes"))
+
+    assert result.ok is True
+
+
+def test_a_quote_that_drops_a_negation_is_rejected_however_similar_it_looks():
+    session = create_session("s1", PROTOCOL)
+    session.transcript.append(_turn(0, "patient", "honestly I have no fever at all today"))
+    handlers = create_tool_handlers(session)
+
+    result = handlers["update_intake_record"](_present("fever", "a fever today", "honestly I have a fever at all today"))
+
+    assert result.ok is False
+    assert "not found in anything the patient has said" in result.error
+    assert session.record.facts == []

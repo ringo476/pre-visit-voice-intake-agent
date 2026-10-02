@@ -35,7 +35,9 @@ from app.state_engine import (
     derive_polarity,
     evidence_follows_question,
     evidence_in_patient_speech,
+    QUOTE_MATCH_THRESHOLD,
     evidence_in_text,
+    evidence_match_score,
     find_asked_event,
     get_current_facts,
     get_missing_fields,
@@ -175,6 +177,13 @@ def create_tool_handlers(
 
         # Where did the quote really come from?
         in_speech = evidence_in_patient_speech(session.transcript, evidence)
+        if in_speech:
+            score = evidence_match_score(" ".join(t.text for t in session.transcript if t.speaker == "patient"), evidence)
+            if score < 1.0:  # accepted as a near copy, not an exact one: keep the rate visible
+                logger.info(
+                    "quote matched approximately",
+                    extra={"session_id": session.session_id, "field": field, "score": round(score, 3), "threshold": QUOTE_MATCH_THRESHOLD},
+                )
         document = None
         if not in_speech and not correction:
             document = next((d for d in session.documents if evidence_in_text(d.text, evidence)), None)
